@@ -26,6 +26,18 @@ namespace shark
 
         bool mpspdz_32bit_compaison = false;
 
+        /// Semi-honest mode flag (default: false = malicious security)
+        bool semi_honest_mode = false;
+
+        void set_semi_honest_mode(bool enabled)
+        {
+            semi_honest_mode = enabled;
+            if (enabled)
+            {
+                std::cout << "[Shark] Semi-honest mode enabled - MAC verification disabled" << std::endl;
+            }
+        }
+
         template block rand<block>();
         template u64 rand<u64>();
         template u128 rand<u128>();
@@ -408,6 +420,13 @@ namespace shark
 
         void batch_check()
         {
+            // In semi-honest mode, skip MAC verification entirely
+            if (semi_honest_mode)
+            {
+                batchCheckArithmBuffer.clear();
+                batchCheckBoolBuffer.clear();
+                return;
+            }
 
             if ((batchCheckArithmBuffer.size() == 0) && (batchCheckBoolBuffer.size() == 0))
             {
@@ -458,6 +477,263 @@ namespace shark
             {
                 return std::make_tuple(std::get<0>(x), std::get<1>(x) ^ bit_key);
             }
+        }
+
+        // ============================================================
+        // Semi-honest mode implementations (no MAC verification)
+        // ============================================================
+
+        /// Semi-honest: send arithmetic share without MAC tags (dealer side)
+        void send_sh_ashare(const shark::span<u64> &share)
+        {
+            u64 size = share.size();
+            shark::span<u64> share_0(size);
+            shark::span<u64> share_1(size);
+
+            randomize(share_0);
+
+            #pragma omp parallel for
+            for (u64 i = 0; i < size; i++)
+            {
+                share_1[i] = share[i] - share_0[i];
+            }
+
+            server->send_array(share_0);
+            client->send_array(share_1);
+        }
+
+        /// Semi-honest: send boolean share without MAC tags (dealer side)
+        void send_sh_bshare(const shark::span<u8> &share)
+        {
+            u64 size = share.size();
+            shark::span<u8> share_0(size);
+            shark::span<u8> share_1(size);
+
+            randomize(share_0);
+
+            #pragma omp parallel for
+            for (u64 i = 0; i < size; i++)
+            {
+                share_1[i] = share[i] ^ share_0[i];
+            }
+
+            server->send_array(share_0);
+            client->send_array(share_1);
+        }
+
+        /// Semi-honest: send DCF keys without MAC tags (dealer side)
+        void send_sh_dcfbit(const shark::span<u64> &share, int bin)
+        {
+            u64 size = share.size();
+            for (u64 i = 0; i < size; ++i)
+            {
+                auto [k0, k1] = crypto::dcfbit_gen_sh(bin, share[i]);
+                server->send_array(k0.k);
+                server->send_array(k0.v_bit);
+                server->send(k0.g_bit);
+
+                client->send_array(k1.k);
+                client->send_array(k1.v_bit);
+                client->send(k1.g_bit);
+            }
+        }
+
+        /// Semi-honest: receive arithmetic share without MAC tags (evaluator side)
+        shark::span<u64> recv_sh_ashare(u64 size)
+        {
+            auto share = dealer->recv_array<u64>(size);
+            return share;
+        }
+
+        /// Semi-honest: receive boolean share without MAC tags (evaluator side)
+        shark::span<u8> recv_sh_bshare(u64 size)
+        {
+            auto share = dealer->recv_array<u8>(size);
+            return share;
+        }
+
+        /// Semi-honest: receive DCF keys without MAC tags (evaluator side)
+        shark::span<crypto::DCFBitKeySH> recv_sh_dcfbit(u64 size, int bin)
+        {
+            shark::span<crypto::DCFBitKeySH> keys(size);
+            for (u64 i = 0; i < size; ++i)
+            {
+                auto k = dealer->recv_array<block>(bin + 1);
+                auto v_bit = dealer->recv_array<u8>(bin);
+                u8 g_bit = dealer->recv<u8>();
+
+                keys[i] = std::move(
+                    crypto::DCFBitKeySH(
+                        std::move(k),
+                        std::move(v_bit),
+                        g_bit
+                    )
+                );
+            }
+            return keys;
+        }
+
+        /// Semi-honest: send DCF ring keys without MAC tags (dealer side)
+        void send_sh_dcfring(const shark::span<u64> &share, int bin)
+        {
+            u64 size = share.size();
+            for (u64 i = 0; i < size; ++i)
+            {
+                auto [k0, k1] = crypto::dcfring_gen_sh(bin, share[i]);
+                server->send_array(k0.k);
+                server->send_array(k0.v_ring);
+                server->send(k0.g_ring);
+
+                client->send_array(k1.k);
+                client->send_array(k1.v_ring);
+                client->send(k1.g_ring);
+            }
+        }
+
+        /// Semi-honest: send DPF ring keys without MAC tags (dealer side)
+        void send_sh_dpfring(const shark::span<u64> &share, int bin)
+        {
+            u64 size = share.size();
+            for (u64 i = 0; i < size; ++i)
+            {
+                auto [k0, k1] = crypto::dpfring_gen_sh(bin, share[i]);
+                server->send_array(k0.k);
+                server->send(k0.g_ring);
+
+                client->send_array(k1.k);
+                client->send(k1.g_ring);
+            }
+        }
+
+        /// Semi-honest: receive DCF ring keys without MAC tags (evaluator side)
+        shark::span<crypto::DCFRingKeySH> recv_sh_dcfring(u64 size, int bin)
+        {
+            shark::span<crypto::DCFRingKeySH> keys(size);
+            for (u64 i = 0; i < size; ++i)
+            {
+                auto k = dealer->recv_array<block>(bin + 1);
+                auto v_ring = dealer->recv_array<u64>(bin);
+                u64 g_ring = dealer->recv<u64>();
+
+                keys[i] = std::move(
+                    crypto::DCFRingKeySH(
+                        std::move(k),
+                        std::move(v_ring),
+                        g_ring
+                    )
+                );
+            }
+            return keys;
+        }
+
+        /// Semi-honest: receive DPF ring keys without MAC tags (evaluator side)
+        shark::span<crypto::DPFRingKeySH> recv_sh_dpfring(u64 size, int bin)
+        {
+            shark::span<crypto::DPFRingKeySH> keys(size);
+            for (u64 i = 0; i < size; ++i)
+            {
+                auto k = dealer->recv_array<block>(bin + 1);
+                u64 g_ring = dealer->recv<u64>();
+
+                keys[i] = std::move(
+                    crypto::DPFRingKeySH(
+                        std::move(k),
+                        g_ring
+                    )
+                );
+            }
+            return keys;
+        }
+
+        /// Semi-honest: simple reconstruct for arithmetic shares (no MAC verification)
+        shark::span<u64> sh_reconstruct(shark::span<u64> &share)
+        {
+            shark::utils::start_timer("reconstruct");
+            shark::span<u64> tmp(share.size());
+            shark::span<u64> res(share.size());
+
+            if (parallel_reconstruct)
+            {
+                #pragma omp parallel sections
+                {
+                    #pragma omp section
+                    {
+                        peer->send_array(share);
+                    }
+
+                    #pragma omp section
+                    {
+                        peer->recv_array(tmp);
+                    }
+                }
+            }
+            else
+            {
+                peer->send_array(share);
+                peer->recv_array(tmp);
+            }
+
+            #pragma omp parallel for
+            for (u64 i = 0; i < share.size(); i++)
+            {
+                res[i] = share[i] + tmp[i];
+            }
+
+            shark::utils::stop_timer("reconstruct");
+            return res;
+        }
+
+        /// Semi-honest: simple reconstruct for boolean shares (no MAC verification)
+        shark::span<u8> sh_reconstruct(shark::span<u8> &share)
+        {
+            shark::utils::start_timer("reconstruct");
+            shark::span<u8> tmp(share.size());
+
+            if (parallel_reconstruct)
+            {
+                #pragma omp parallel sections
+                {
+                    #pragma omp section
+                    {
+                        peer->send_array(share);
+                    }
+
+                    #pragma omp section
+                    {
+                        peer->recv_array(tmp);
+                    }
+                }
+            }
+            else
+            {
+                peer->send_array(share);
+                peer->recv_array(tmp);
+            }
+
+            #pragma omp parallel for
+            for (u64 i = 0; i < share.size(); i++)
+            {
+                share[i] ^= tmp[i];
+            }
+
+            shark::utils::stop_timer("reconstruct");
+            return share;
+        }
+
+        /// Semi-honest XOR for boolean shares
+        u8 xor_sh(u8 x, u8 y)
+        {
+            return x ^ y;
+        }
+
+        /// Semi-honest NOT for boolean shares
+        u8 not_sh(u8 x)
+        {
+            if (party == SERVER)
+            {
+                return x ^ 1;
+            }
+            return x;
         }
     }
 }

@@ -176,7 +176,7 @@ namespace shark {
                 auto mat_Filter = getMat(co, f * f * ci, Filter).cast<u128>();
                 auto mat_r_Filter = getMat(co, f * f * ci, r_Filter);
                 auto mat_r_Filter_tag = getMat(co, f * f * ci, r_Filter_tag);
-                
+
                 auto mat_r_C = getMat(co, bs * outH * outW, r_C);
                 auto mat_r_C_tag = getMat(co, bs * outH * outW, r_C_tag);
 
@@ -192,15 +192,92 @@ namespace shark {
                 getReshapedOutputReversed(bs, outH, outW, co, Z_reconstructed, Z);
             }
 
+            // ============================================================
+            // Semi-honest version (no MAC verification)
+            // ============================================================
+
+            void gen_sh(u64 f, u64 padding, u64 stride, u64 ci, u64 co, u64 inH, u64 inW, const shark::span<u64> &r_Img, const shark::span<u64> &r_Filter, shark::span<u64> &r_Z)
+            {
+                always_assert(r_Img.size() % (inH * inW * ci) == 0);
+                u64 bs = r_Img.size() / (inH * inW * ci);
+                always_assert(r_Filter.size() == co * f * f * ci);
+                u64 outH = (inH - f + 2 * padding) / stride + 1;
+                u64 outW = (inW - f + 2 * padding) / stride + 1;
+                always_assert(r_Z.size() == bs * outH * outW * co);
+
+                randomize(r_Z);
+                auto mat_r_Filter = getMat(co, f * f * ci, r_Filter);
+                auto reshaped_r_Img = getReshapedImage(f, padding, stride, ci, inH, inW, r_Img);
+                auto mat_r_Img = getMat(f * f * ci, bs * outH * outW, reshaped_r_Img);
+                auto reshaped_r_Z = getReshapedOutput(bs, outH, outW, co, r_Z);
+                auto mat_r_Z = getMat(co, bs * outH * outW, reshaped_r_Z);
+
+                shark::span<u64> r_C(co * bs * outH * outW);
+                auto mat_r_C = getMat(co, bs * outH * outW, r_C);
+                mat_r_C = mat_r_Filter * mat_r_Img + mat_r_Z;
+
+                send_sh_ashare(r_Img);
+                send_sh_ashare(r_Filter);
+                send_sh_ashare(r_C);
+            }
+
+            void eval_sh(u64 f, u64 padding, u64 stride, u64 ci, u64 co, u64 inH, u64 inW, const shark::span<u64> &Img, const shark::span<u64> &Filter, shark::span<u64> &Z)
+            {
+                always_assert(Img.size() % (inH * inW * ci) == 0);
+                u64 bs = Img.size() / (inH * inW * ci);
+                always_assert(Filter.size() == co * f * f * ci);
+                u64 outH = (inH - f + 2 * padding) / stride + 1;
+                u64 outW = (inW - f + 2 * padding) / stride + 1;
+                always_assert(Z.size() == bs * outH * outW * co);
+
+                shark::utils::start_timer("key_read");
+                auto r_Img = recv_sh_ashare(bs * inH * inW * ci);
+                auto r_Filter = recv_sh_ashare(co * f * f * ci);
+                auto r_C = recv_sh_ashare(co * bs * outH * outW);
+                shark::utils::stop_timer("key_read");
+
+                // reshapes
+                auto reshaped_Img = getReshapedImage(f, padding, stride, ci, inH, inW, Img);
+                auto reshaped_r_Img = getReshapedImage(f, padding, stride, ci, inH, inW, r_Img);
+
+                auto mat_Img = getMat(f * f * ci, bs * outH * outW, reshaped_Img);
+                auto mat_r_Img = getMat(f * f * ci, bs * outH * outW, reshaped_r_Img);
+
+                shark::span<u64> reshaped_Z(co * bs * outH * outW);
+                auto mat_reshaped_Z = getMat(co, bs * outH * outW, reshaped_Z);
+
+                auto mat_Filter = getMat(co, f * f * ci, Filter);
+                auto mat_r_Filter = getMat(co, f * f * ci, r_Filter);
+
+                auto mat_r_C = getMat(co, bs * outH * outW, r_C);
+
+                // Z = r_Z + X @ Y - r_X @ Y - X @ r_Y
+                mat_reshaped_Z = mat_r_C + (mat_Filter * u64(party) - mat_r_Filter) * mat_Img;
+                mat_reshaped_Z -= mat_Filter * mat_r_Img;
+
+                auto Z_reconstructed = sh_reconstruct(reshaped_Z);
+                getReshapedOutputReversed(bs, outH, outW, co, Z_reconstructed, Z);
+            }
+
+            // ============================================================
+            // Unified interface (selects based on semi_honest_mode)
+            // ============================================================
+
             void call(u64 f, u64 padding, u64 stride, u64 ci, u64 co, u64 inH, u64 inW, const shark::span<u64> &Img, const shark::span<u64> &Filter, shark::span<u64> &Z)
             {
                 if (party == DEALER)
                 {
-                    gen(f, padding, stride, ci, co, inH, inW, Img, Filter, Z);
+                    if (semi_honest_mode)
+                        gen_sh(f, padding, stride, ci, co, inH, inW, Img, Filter, Z);
+                    else
+                        gen(f, padding, stride, ci, co, inH, inW, Img, Filter, Z);
                 }
                 else
                 {
-                    eval(f, padding, stride, ci, co, inH, inW, Img, Filter, Z);
+                    if (semi_honest_mode)
+                        eval_sh(f, padding, stride, ci, co, inH, inW, Img, Filter, Z);
+                    else
+                        eval(f, padding, stride, ci, co, inH, inW, Img, Filter, Z);
                 }
             }
  

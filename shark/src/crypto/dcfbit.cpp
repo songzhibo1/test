@@ -262,5 +262,163 @@ namespace shark
             return std::make_tuple(out_bit, out_tag_1);
         }
 
+        // ============================================================
+        // Semi-honest DCF implementations (no MAC tags)
+        // ============================================================
+
+        /// Helper: convert block to just bit (no tags)
+        inline u8 convert_sh(const block &in)
+        {
+            return lsb(in);
+        }
+
+        /// Semi-honest DCF generation - no MAC tags
+        std::pair<DCFBitKeySH, DCFBitKeySH> dcfbit_gen_sh(int bin, const u64 alpha, const bool greaterThan)
+        {
+            u8 payload_bit = 1;
+
+            auto s = protocols::rand<std::array<block, 2>>();
+            block si[2][2];
+            block vi[2][2];
+
+            u8 v_alpha_bit = 0;
+
+            shark::span<block> k0(bin + 1);
+            shark::span<block> k1(bin + 1);
+            shark::span<u8> v0_bit(bin);
+
+            s[0] = (s[0] & notOneBlock) ^ ((s[1] & OneBlock) ^ OneBlock);
+            k0[0] = s[0];
+            k1[0] = s[1];
+
+            for (int i = 0; i < bin; ++i)
+            {
+                const u8 keep = static_cast<uint8_t>(alpha >> (bin - 1 - i)) & 1;
+                auto a = toBlock(keep);
+
+                auto ss0 = s[0] & notThreeBlock;
+                auto ss1 = s[1] & notThreeBlock;
+
+                si[0][0] = ak0.ecbEncBlock(ss0) ^ ss0;
+                si[0][1] = ak1.ecbEncBlock(ss0) ^ ss0;
+                vi[0][0] = ak2.ecbEncBlock(ss0) ^ ss0;
+                vi[0][1] = ak3.ecbEncBlock(ss0) ^ ss0;
+                si[1][0] = ak0.ecbEncBlock(ss1) ^ ss1;
+                si[1][1] = ak1.ecbEncBlock(ss1) ^ ss1;
+                vi[1][0] = ak2.ecbEncBlock(ss1) ^ ss1;
+                vi[1][1] = ak3.ecbEncBlock(ss1) ^ ss1;
+
+                auto ti0 = lsb(s[0]);
+                auto ti1 = lsb(s[1]);
+
+                u8 vi_00_bit = convert_sh(vi[0][keep]);
+                u8 vi_10_bit = convert_sh(vi[1][keep]);
+                u8 vi_01_bit = convert_sh(vi[0][keep ^ 1]);
+                u8 vi_11_bit = convert_sh(vi[1][keep ^ 1]);
+
+                v0_bit[i] = v_alpha_bit ^ vi_01_bit ^ vi_11_bit;
+                if (keep == 0 && greaterThan)
+                {
+                    v0_bit[i] = v0_bit[i] ^ payload_bit;
+                }
+                else if (keep == 1 && !greaterThan)
+                {
+                    v0_bit[i] = v0_bit[i] ^ payload_bit;
+                }
+                v_alpha_bit = v_alpha_bit ^ vi_10_bit ^ vi_00_bit ^ v0_bit[i];
+
+                std::array<block, 2> siXOR{si[0][0] ^ si[1][0], si[0][1] ^ si[1][1]};
+                std::array<block, 2> t{
+                    (OneBlock & siXOR[0]) ^ a ^ OneBlock,
+                    (OneBlock & siXOR[1]) ^ a};
+
+                auto scw = siXOR[keep ^ 1] & notThreeBlock;
+
+                k0[i + 1] = k1[i + 1] = scw ^ (t[0] << 1) ^ t[1];
+
+                auto si0Keep = si[0][keep];
+                auto si1Keep = si[1][keep];
+                auto TKeep = t[keep];
+
+                s[0] = si0Keep ^ (zeroAndAllOne[ti0] & (scw ^ TKeep));
+                s[1] = si1Keep ^ (zeroAndAllOne[ti1] & (scw ^ TKeep));
+            }
+
+            u8 s0_bit = convert_sh(s[0] & notThreeBlock);
+            u8 s1_bit = convert_sh(s[1] & notThreeBlock);
+
+            u8 g0_bit = s1_bit ^ s0_bit ^ v_alpha_bit;
+
+            return std::make_pair(
+                DCFBitKeySH(k0, v0_bit, g0_bit),
+                DCFBitKeySH(k1, v0_bit, g0_bit)
+            );
+        }
+
+        /// Helper: traverse one level of DCF tree (semi-honest)
+        block traverseOneDCF_sh(const block &s, const block &cw, const u8 &keep,
+                                u8 &out_bit, u8 v_bit)
+        {
+            block stcw;
+            block ct[2];
+            u8 t_previous = lsb(s);
+            const auto scw = (cw & notThreeBlock);
+            block ds[] = { ((cw >> 1) & OneBlock), (cw & OneBlock) };
+            const auto mask = zeroAndAllOne[t_previous];
+            auto ss = s & notThreeBlock;
+
+            if (keep == 0)
+            {
+                ct[0] = ak0.ecbEncBlock(ss) ^ ss;
+                ct[1] = ak2.ecbEncBlock(ss) ^ ss;
+            }
+            else
+            {
+                ct[0] = ak1.ecbEncBlock(ss) ^ ss;
+                ct[1] = ak3.ecbEncBlock(ss) ^ ss;
+            }
+
+            stcw = ((scw ^ ds[keep]) & mask) ^ ct[0];
+
+            u8 v_this_level_bit = convert_sh(ct[1]);
+            out_bit = out_bit ^ (v_this_level_bit ^ t_previous * v_bit);
+
+            return stcw;
+        }
+
+        /// Helper: traverse full DCF path (semi-honest)
+        std::pair<block, u8> traversePathDCF_sh(const DCFBitKeySH &key, u64 x)
+        {
+            int bin = key.k.size() - 1;
+            block s = _mm_loadu_si128(key.k.data());
+            u8 out_bit = 0;
+
+            for (int i = 0; i < bin; ++i)
+            {
+                const u8 keep = static_cast<uint8_t>(x >> (bin - 1 - i)) & 1;
+                s = traverseOneDCF_sh(s, _mm_loadu_si128(key.k.data() + (i + 1)),
+                                      keep, out_bit, key.v_bit[i]);
+            }
+            return std::make_pair(s, out_bit);
+        }
+
+        /// Semi-honest DCF evaluation - returns only the bit
+        u8 dcfbit_eval_sh(const DCFBitKeySH &key, const u64 &x, const bool greaterThan)
+        {
+            auto [s, out_bit] = traversePathDCF_sh(key, x);
+            u8 t = lsb(s);
+
+            u8 s_converted_bit = convert_sh(s & notThreeBlock);
+
+            if (t)
+            {
+                s_converted_bit = s_converted_bit ^ key.g_bit;
+            }
+
+            out_bit = out_bit ^ s_converted_bit;
+
+            return out_bit;
+        }
+
     }
 }
