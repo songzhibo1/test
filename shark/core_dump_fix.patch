@@ -1,0 +1,42 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0d6e1e6..9a5d25f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -108,6 +108,7 @@ set (BENCHMARKS
+     mnist-A
+     hinet
+     vgg16
++    simple_demo
+ )
+ 
+ foreach (benchmark IN LISTS BENCHMARKS)
+diff --git a/include/shark/utils/comm.hpp b/include/shark/utils/comm.hpp
+index b01e691..e4b9f33 100644
+--- a/include/shark/utils/comm.hpp
++++ b/include/shark/utils/comm.hpp
+@@ -216,6 +216,12 @@ namespace shark
+         template <typename T>
+         shark::span<T> recv_array(u64 size)
+         {
++            if (keyBuf->isMem())
++            {
++                shark::span<T> arr(size);
++                keyBuf->read((char *)arr.data(), size * sizeof(T));
++                return arr;
++            }
+             T* buf = (T*) keyBuf->read(size * sizeof(T));
+             shark::span<T> arr(buf, size);
+             return arr;
+@@ -321,6 +327,12 @@ namespace shark
+         template <typename T>
+         shark::span<T> recv_array(u64 size)
+         {
++            if (keyBuf->isMem())
++            {
++                shark::span<T> arr(size);
++                keyBuf->read((char *)arr.data(), size * sizeof(T));
++                return arr;
++            }
+             T* buf = (T*) keyBuf->read(size * sizeof(T));
+             shark::span<T> arr(buf, size);
+             return arr;
