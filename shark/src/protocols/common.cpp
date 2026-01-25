@@ -566,6 +566,78 @@ namespace shark
             return keys;
         }
 
+        /// Semi-honest: send DCF ring keys without MAC tags (dealer side)
+        void send_sh_dcfring(const shark::span<u64> &share, int bin)
+        {
+            u64 size = share.size();
+            for (u64 i = 0; i < size; ++i)
+            {
+                auto [k0, k1] = crypto::dcfring_gen_sh(bin, share[i]);
+                server->send_array(k0.k);
+                server->send_array(k0.v_ring);
+                server->send(k0.g_ring);
+
+                client->send_array(k1.k);
+                client->send_array(k1.v_ring);
+                client->send(k1.g_ring);
+            }
+        }
+
+        /// Semi-honest: send DPF ring keys without MAC tags (dealer side)
+        void send_sh_dpfring(const shark::span<u64> &share, int bin)
+        {
+            u64 size = share.size();
+            for (u64 i = 0; i < size; ++i)
+            {
+                auto [k0, k1] = crypto::dpfring_gen_sh(bin, share[i]);
+                server->send_array(k0.k);
+                server->send(k0.g_ring);
+
+                client->send_array(k1.k);
+                client->send(k1.g_ring);
+            }
+        }
+
+        /// Semi-honest: receive DCF ring keys without MAC tags (evaluator side)
+        shark::span<crypto::DCFRingKeySH> recv_sh_dcfring(u64 size, int bin)
+        {
+            shark::span<crypto::DCFRingKeySH> keys(size);
+            for (u64 i = 0; i < size; ++i)
+            {
+                auto k = dealer->recv_array<block>(bin + 1);
+                auto v_ring = dealer->recv_array<u64>(bin);
+                u64 g_ring = dealer->recv<u64>();
+
+                keys[i] = std::move(
+                    crypto::DCFRingKeySH(
+                        std::move(k),
+                        std::move(v_ring),
+                        g_ring
+                    )
+                );
+            }
+            return keys;
+        }
+
+        /// Semi-honest: receive DPF ring keys without MAC tags (evaluator side)
+        shark::span<crypto::DPFRingKeySH> recv_sh_dpfring(u64 size, int bin)
+        {
+            shark::span<crypto::DPFRingKeySH> keys(size);
+            for (u64 i = 0; i < size; ++i)
+            {
+                auto k = dealer->recv_array<block>(bin + 1);
+                u64 g_ring = dealer->recv<u64>();
+
+                keys[i] = std::move(
+                    crypto::DPFRingKeySH(
+                        std::move(k),
+                        g_ring
+                    )
+                );
+            }
+            return keys;
+        }
+
         /// Semi-honest: simple reconstruct for arithmetic shares (no MAC verification)
         shark::span<u64> sh_reconstruct(shark::span<u64> &share)
         {

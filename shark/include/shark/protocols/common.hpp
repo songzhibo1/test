@@ -90,11 +90,15 @@ namespace shark {
         void send_sh_ashare(const shark::span<u64> &share);
         void send_sh_bshare(const shark::span<u8> &share);
         void send_sh_dcfbit(const shark::span<u64> &share, int bin);
+        void send_sh_dcfring(const shark::span<u64> &share, int bin);
+        void send_sh_dpfring(const shark::span<u64> &share, int bin);
 
         /// Semi-honest: receive share without MAC tags (evaluator side)
         shark::span<u64> recv_sh_ashare(u64 size);
         shark::span<u8> recv_sh_bshare(u64 size);
         shark::span<crypto::DCFBitKeySH> recv_sh_dcfbit(u64 size, int bin);
+        shark::span<crypto::DCFRingKeySH> recv_sh_dcfring(u64 size, int bin);
+        shark::span<crypto::DPFRingKeySH> recv_sh_dpfring(u64 size, int bin);
 
         /// Semi-honest: simple reconstruct without MAC verification
         shark::span<u64> sh_reconstruct(shark::span<u64> &share);
