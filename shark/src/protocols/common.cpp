@@ -650,7 +650,6 @@ namespace shark
         {
             shark::utils::start_timer("reconstruct");
             shark::span<u64> tmp(share.size());
-            shark::span<u64> res(share.size());
 
             if (parallel_reconstruct)
             {
@@ -673,14 +672,14 @@ namespace shark
                 peer->recv_array(tmp);
             }
 
-            #pragma omp parallel for
+            // In-place modification (no extra allocation, matches malicious version)
             for (u64 i = 0; i < share.size(); i++)
             {
-                res[i] = share[i] + tmp[i];
+                share[i] += tmp[i];
             }
 
             shark::utils::stop_timer("reconstruct");
-            return res;
+            return share;
         }
 
         /// Semi-honest: simple reconstruct for boolean shares (no MAC verification)
@@ -710,7 +709,7 @@ namespace shark
                 peer->recv_array(tmp);
             }
 
-            #pragma omp parallel for
+            // In-place modification (no OpenMP overhead, matches malicious version)
             for (u64 i = 0; i < share.size(); i++)
             {
                 share[i] ^= tmp[i];
