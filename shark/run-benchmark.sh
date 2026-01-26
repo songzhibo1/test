@@ -2,7 +2,7 @@
 set -e
 
 # Default values
-THREADS=4
+THREADS="default"
 MODE="both"
 BENCHMARKS="simc1"
 
@@ -11,16 +11,18 @@ usage() {
     echo "Usage: $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  -t, --threads NUM      Set OMP_NUM_THREADS (default: 4)"
+    echo "  -t, --threads NUM      Set OMP_NUM_THREADS (default: system default, use 0 or 'default' for no limit)"
     echo "  -m, --mode MODE        Set mode: 'malicious', 'semi-honest', or 'both' (default: both)"
     echo "  -b, --benchmarks LIST  Comma-separated list of benchmarks (default: simc1)"
     echo "  -a, --all              Run all benchmarks"
     echo "  -h, --help             Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 -t 4 -b simc1                    # Run both modes with 4 threads"
-    echo "  $0 -t 8 -m semi-honest -b simc1    # Run only semi-honest mode"
-    echo "  $0 -t 4 -a                          # Run all benchmarks in both modes"
+    echo "  $0 -b simc1                           # Run both modes with system default threads"
+    echo "  $0 -t 4 -b simc1                      # Run both modes with 4 threads"
+    echo "  $0 -t 0 -b simc1                      # Run with no thread limit (system default)"
+    echo "  $0 -t 8 -m semi-honest -b simc1      # Run only semi-honest mode with 8 threads"
+    echo "  $0 -t 4 -a                            # Run all benchmarks in both modes"
     exit 0
 }
 
@@ -78,11 +80,19 @@ run_benchmark() {
     # Generate keys
     ./build/benchmark-$benchmark 2 $sh_flag &> /dev/null
 
-    # Run both parties
-    OMP_NUM_THREADS=$THREADS ./build/benchmark-$benchmark 0 127.0.0.1 $sh_flag &> tmp0.txt &
-    PID0=$!
-    sleep 0.5
-    OMP_NUM_THREADS=$THREADS ./build/benchmark-$benchmark 1 127.0.0.1 $sh_flag &> tmp1.txt
+    # Run both parties (with or without OMP_NUM_THREADS)
+    if [ "$THREADS" = "default" ] || [ "$THREADS" = "0" ]; then
+        # No thread limit - use system default
+        ./build/benchmark-$benchmark 0 127.0.0.1 $sh_flag &> tmp0.txt &
+        PID0=$!
+        sleep 0.5
+        ./build/benchmark-$benchmark 1 127.0.0.1 $sh_flag &> tmp1.txt
+    else
+        OMP_NUM_THREADS=$THREADS ./build/benchmark-$benchmark 0 127.0.0.1 $sh_flag &> tmp0.txt &
+        PID0=$!
+        sleep 0.5
+        OMP_NUM_THREADS=$THREADS ./build/benchmark-$benchmark 1 127.0.0.1 $sh_flag &> tmp1.txt
+    fi
     wait $PID0
 
     # Extract results from Party 1 (has the timing info)
