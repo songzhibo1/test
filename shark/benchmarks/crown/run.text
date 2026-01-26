@@ -1,0 +1,20 @@
+cmake -DCMAKE_BUILD_TYPE=Release -S . -B build/
+
+
+cmake --build build/ --config Release --target all -j
+
+./build/benchmark-crown 2
+
+OMP_NUM_THREADS=1 ./build/benchmark-crown 1 127.0.0.1
+
+OMP_NUM_THREADS=1 ./build/benchmark-crown 0 127.0.0.1
+
+# 清空
+sudo tc qdisc del dev lo root 2>/dev/null
+
+# 设置：40ms 延迟 + 44MB/s
+sudo tc qdisc add dev lo root netem delay 40ms rate 352Mbit
+查看当前是否生效（强烈建议）
+tc qdisc show dev lo
+你会看到类似：
+qdisc netem 8001: root refcnt 2 limit 1000 delay 40.0ms rate 352Mbit
