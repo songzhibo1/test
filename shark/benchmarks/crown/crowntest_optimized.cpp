@@ -695,6 +695,10 @@ int main(int argc, char **argv) {
         std::cout << "********************************************" << std::endl;
     }
 
+    // ==================== Input Phase 开始 ====================
+    shark::utils::start_timer("End_to_end_time");  // 端到端时间包含 input
+    shark::utils::start_timer("input");
+
     std::vector<shark::span<u64>> weights(num_layers);
     std::vector<shark::span<u64>> biases(num_layers);
     for (int i = 0; i < num_layers; ++i) {
@@ -739,9 +743,10 @@ int main(int argc, char **argv) {
     input::call(diff_vec, CLIENT);
     input::call(ones_input, CLIENT);
 
-    if (party != DEALER) peer->sync();
+    shark::utils::stop_timer("input");
+    // ==================== Input Phase 结束 ====================
 
-    shark::utils::start_timer("End_to_end_time");
+    if (party != DEALER) peer->sync();
     shark::utils::start_timer("crown_calculation");
 
     CROWNComputer crown(input_dim);
