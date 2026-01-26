@@ -3,7 +3,7 @@ set -e
 
 # Default values
 THREADS=4
-MODE="malicious"
+MODE="both"
 BENCHMARKS="simc1"
 
 # Help message
@@ -12,15 +12,15 @@ usage() {
     echo ""
     echo "Options:"
     echo "  -t, --threads NUM      Set OMP_NUM_THREADS (default: 4)"
-    echo "  -m, --mode MODE        Set mode: 'malicious' or 'semi-honest' (default: malicious)"
+    echo "  -m, --mode MODE        Set mode: 'malicious', 'semi-honest', or 'both' (default: both)"
     echo "  -b, --benchmarks LIST  Comma-separated list of benchmarks (default: simc1)"
     echo "  -a, --all              Run all benchmarks"
     echo "  -h, --help             Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 -t 4 -m semi-honest -b simc1"
-    echo "  $0 --threads 8 --mode malicious --benchmarks simc1,simc2,hinet"
-    echo "  $0 -t 4 -m semi-honest -a"
+    echo "  $0 -t 4 -b simc1                    # Run both modes with 4 threads"
+    echo "  $0 -t 8 -m semi-honest -b simc1    # Run only semi-honest mode"
+    echo "  $0 -t 4 -a                          # Run all benchmarks in both modes"
     exit 0
 }
 
@@ -53,53 +53,107 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Set semi-honest flag
-if [ "$MODE" = "semi-honest" ] || [ "$MODE" = "sh" ]; then
-    SH_FLAG="--semi-honest"
-    MODE_DISPLAY="Semi-honest"
-else
-    SH_FLAG=""
-    MODE_DISPLAY="Malicious"
-fi
-
 # Convert comma-separated to space-separated
 BENCHMARKS=$(echo "$BENCHMARKS" | tr ',' ' ')
 
 echo "========================================"
 echo "Shark Benchmark Runner"
 echo "========================================"
-echo "Mode:        $MODE_DISPLAY"
 echo "Threads:     $THREADS"
+echo "Mode:        $MODE"
 echo "Benchmarks:  $BENCHMARKS"
 echo "========================================"
 echo ""
 
-# Run benchmarks
-for benchmark in $BENCHMARKS; do
-    echo "----------------------------------------"
-    echo "Benchmarking: $benchmark"
-    echo "Mode: $MODE_DISPLAY | Threads: $THREADS"
-    echo "----------------------------------------"
+# Function to run a single benchmark with a specific mode
+run_benchmark() {
+    local benchmark=$1
+    local mode=$2
+    local sh_flag=""
+
+    if [ "$mode" = "semi-honest" ]; then
+        sh_flag="--semi-honest"
+    fi
 
     # Generate keys
-    ./build/benchmark-$benchmark 2 $SH_FLAG &> /dev/null
+    ./build/benchmark-$benchmark 2 $sh_flag &> /dev/null
 
     # Run both parties
-    OMP_NUM_THREADS=$THREADS ./build/benchmark-$benchmark 0 127.0.0.1 $SH_FLAG &> tmp0.txt &
+    OMP_NUM_THREADS=$THREADS ./build/benchmark-$benchmark 0 127.0.0.1 $sh_flag &> tmp0.txt &
     PID0=$!
     sleep 0.5
-    OMP_NUM_THREADS=$THREADS ./build/benchmark-$benchmark 1 127.0.0.1 $SH_FLAG &> tmp1.txt
+    OMP_NUM_THREADS=$THREADS ./build/benchmark-$benchmark 1 127.0.0.1 $sh_flag &> tmp1.txt
     wait $PID0
 
-    echo ""
-    echo "Party 0:"
-    cat tmp0.txt
-    echo ""
-    echo "Party 1:"
-    cat tmp1.txt
-    echo ""
+    # Extract results from Party 1 (has the timing info)
+    local time=$(grep "^${benchmark}:" tmp1.txt | awk '{print $2}')
+    local comm=$(grep "^${benchmark}:" tmp1.txt | awk '{print $4}')
+    local reconstruct=$(grep "^reconstruct:" tmp1.txt | awk '{print $2}')
+    local reconstruct_comm=$(grep "^reconstruct:" tmp1.txt | awk '{print $4}')
 
     rm -f tmp0.txt tmp1.txt
+
+    echo "$time $comm $reconstruct $reconstruct_comm"
+}
+
+# Run benchmarks
+for benchmark in $BENCHMARKS; do
+    echo "========================================"
+    echo "Benchmark: $benchmark | Threads: $THREADS"
+    echo "========================================"
+
+    if [ "$MODE" = "both" ]; then
+        # Run malicious mode
+        echo -n "Running malicious mode...    "
+        result_mal=$(run_benchmark $benchmark "malicious")
+        time_mal=$(echo $result_mal | awk '{print $1}')
+        comm_mal=$(echo $result_mal | awk '{print $2}')
+        recon_mal=$(echo $result_mal | awk '{print $3}')
+
+        # Run semi-honest mode
+        echo -n "Running semi-honest mode...  "
+        result_sh=$(run_benchmark $benchmark "semi-honest")
+        time_sh=$(echo $result_sh | awk '{print $1}')
+        comm_sh=$(echo $result_sh | awk '{print $2}')
+        recon_sh=$(echo $result_sh | awk '{print $3}')
+
+        echo "Done!"
+        echo ""
+        echo "----------------------------------------"
+        printf "| %-12s | %10s | %10s |\n" "Mode" "Time" "Comm"
+        echo "----------------------------------------"
+        printf "| %-12s | %10s | %10s |\n" "Malicious" "$time_mal" "$comm_mal"
+        printf "| %-12s | %10s | %10s |\n" "Semi-honest" "$time_sh" "$comm_sh"
+        echo "----------------------------------------"
+
+        # Calculate improvement if both values are numbers
+        if [[ "$time_mal" =~ ^[0-9]+$ ]] && [[ "$time_sh" =~ ^[0-9]+$ ]]; then
+            time_diff=$((time_mal - time_sh))
+            time_pct=$(echo "scale=1; $time_diff * 100 / $time_mal" | bc)
+            echo "Time improvement: ${time_diff} ms (${time_pct}%)"
+        fi
+
+        if [[ "$comm_mal" =~ ^[0-9.]+$ ]] && [[ "$comm_sh" =~ ^[0-9.]+$ ]]; then
+            comm_pct=$(echo "scale=1; ($comm_mal - $comm_sh) * 100 / $comm_mal" | bc)
+            echo "Comm reduction: ${comm_pct}%"
+        fi
+
+    elif [ "$MODE" = "semi-honest" ] || [ "$MODE" = "sh" ]; then
+        echo "Running semi-honest mode..."
+        run_benchmark $benchmark "semi-honest" > /dev/null
+        echo ""
+        echo "Party 1 results:"
+        cat tmp1.txt 2>/dev/null || true
+
+    else
+        echo "Running malicious mode..."
+        run_benchmark $benchmark "malicious" > /dev/null
+        echo ""
+        echo "Party 1 results:"
+        cat tmp1.txt 2>/dev/null || true
+    fi
+
+    echo ""
 done
 
 echo "========================================"
