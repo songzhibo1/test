@@ -1,0 +1,14 @@
+# CROWN MPC Configuration
+# Model file: eran_cifar_7layer_relu_100_best
+
+num_layers=7
+layer_dims=3072,100,100,100,100,100,100,10
+weights_file=weights/weights.dat
+eps=0.1
+
+# Parsed parameters
+model=cifar
+numlayer=7
+hidden=100
+activation=relu
+modeltype=best

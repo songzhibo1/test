@@ -1,0 +1,14 @@
+# CROWN MPC Configuration
+# Model file: vnncomp_mnist_3layer_relu_256_best
+
+num_layers=3
+layer_dims=784,256,256,10
+weights_file=weights/weights.dat
+eps=0.1
+
+# Parsed parameters
+model=mnist
+numlayer=3
+hidden=256
+activation=relu
+modeltype=best
