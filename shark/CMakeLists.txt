@@ -116,6 +116,16 @@ foreach (benchmark IN LISTS BENCHMARKS)
     target_link_libraries(benchmark-${benchmark} ${PROJECT_NAME})
 endforeach()
 
+# CROWN benchmarks (in subdirectory)
+add_executable(crowntest benchmarks/crown/crowntest.cpp)
+target_link_libraries(crowntest ${PROJECT_NAME})
+
+add_executable(crowntest_optimized benchmarks/crown/crowntest_optimized.cpp)
+target_link_libraries(crowntest_optimized ${PROJECT_NAME})
+
+add_executable(crowntest_batch benchmarks/crown/crowntest_batch.cpp)
+target_link_libraries(crowntest_batch ${PROJECT_NAME})
+
 set (MICROBENCHMARKS
     relu
     spline
