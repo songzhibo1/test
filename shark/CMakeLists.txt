@@ -108,7 +108,6 @@ set (BENCHMARKS
     mnist-A
     hinet
     vgg16
-    simple_demo
 )
 
 foreach (benchmark IN LISTS BENCHMARKS)

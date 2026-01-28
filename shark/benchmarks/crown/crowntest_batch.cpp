@@ -60,23 +60,47 @@ std::vector<ImageConfig> load_batch_config(const std::string& config_file) {
 class Loader {
     std::ifstream file;
     std::string filename;
+    size_t file_size;
+    size_t bytes_read;
 public:
-    Loader(const std::string &fname) : filename(fname) {
-        file.open(fname, std::ios::binary);
+    Loader(const std::string &fname) : filename(fname), bytes_read(0) {
+        file.open(fname, std::ios::binary | std::ios::ate);
         if (!file.is_open()) {
-            std::cerr << "Failed to open file: " << fname << std::endl;
+            std::cerr << "[ERROR] Failed to open file: " << fname << std::endl;
+            std::cerr.flush();
             std::exit(1);
         }
+        file_size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        std::cout << "[DEBUG] Opened file: " << fname << " (size: " << file_size << " bytes)" << std::endl;
+        std::cout.flush();
     }
 
     void load(shark::span<u64> &X, int precision) {
-        int size = X.size();
-        for (int i = 0; i < size; i++) {
+        size_t size = X.size();
+        size_t bytes_needed = size * sizeof(float);
+        if (bytes_read + bytes_needed > file_size) {
+            std::cerr << "[ERROR] File too small! Need " << (bytes_read + bytes_needed)
+                      << " bytes, but file has only " << file_size << " bytes" << std::endl;
+            std::cerr.flush();
+            std::exit(1);
+        }
+        for (size_t i = 0; i < size; i++) {
             float fval;
             file.read((char *)&fval, sizeof(float));
+            if (!file.good()) {
+                std::cerr << "[ERROR] Read failed at position " << bytes_read << std::endl;
+                std::cerr.flush();
+                std::exit(1);
+            }
             X[i] = (u64)(int64_t)(fval * (1ULL << precision));
         }
+        bytes_read += bytes_needed;
     }
+
+    size_t get_file_size() const { return file_size; }
+    size_t get_bytes_read() const { return bytes_read; }
+
     ~Loader() { if (file.is_open()) file.close(); }
 };
 
@@ -569,43 +593,124 @@ int main(int argc, char **argv) {
         std::cout << "  BATCH MODE: " << num_images << " images" << std::endl;
         std::cout << "  MODEL: " << model_name << std::endl;
         std::cout << "  Layers: " << num_layers << ", Hidden: " << hidden_dim << std::endl;
+        std::cout << "  Layer dims: [";
+        for (size_t i = 0; i < layer_dims.size(); ++i) {
+            std::cout << layer_dims[i];
+            if (i < layer_dims.size() - 1) std::cout << ", ";
+        }
+        std::cout << "]" << std::endl;
+        std::cout << "  Weights file: " << weights_file << std::endl;
         std::cout << "  EPS: " << eps << std::endl;
         std::cout << "********************************************" << std::endl;
+        std::cout.flush();
     }
 
     // ==================== 权重加载 (只做一次) ====================
+    if (party != DEALER) {
+        std::cout << "[DEBUG] Starting weight loading phase..." << std::endl;
+        std::cout.flush();
+    }
+
     shark::utils::start_timer("total_time");
     shark::utils::start_timer("weights_input");
+
+    // Calculate expected weights file size
+    size_t expected_floats = 0;
+    for (int i = 0; i < num_layers; ++i) {
+        expected_floats += layer_dims[i + 1] * layer_dims[i];  // weights
+        expected_floats += layer_dims[i + 1];  // biases
+    }
+    if (party != DEALER) {
+        std::cout << "[DEBUG] Expected weights file size: " << (expected_floats * sizeof(float)) << " bytes (" << expected_floats << " floats)" << std::endl;
+        std::cout.flush();
+    }
+
+    if (party != DEALER) {
+        std::cout << "[DEBUG] Allocating weight arrays..." << std::endl;
+        std::cout.flush();
+    }
 
     std::vector<shark::span<u64>> weights(num_layers);
     std::vector<shark::span<u64>> biases(num_layers);
     for (int i = 0; i < num_layers; ++i) {
-        weights[i] = shark::span<u64>(layer_dims[i + 1] * layer_dims[i]);
-        biases[i] = shark::span<u64>(layer_dims[i + 1]);
+        int w_size = layer_dims[i + 1] * layer_dims[i];
+        int b_size = layer_dims[i + 1];
+        if (party != DEALER) {
+            std::cout << "[DEBUG]   Layer " << i << ": W[" << layer_dims[i] << "x" << layer_dims[i+1] << "]=" << w_size << ", b=" << b_size << std::endl;
+            std::cout.flush();
+        }
+        weights[i] = shark::span<u64>(w_size);
+        biases[i] = shark::span<u64>(b_size);
+    }
+
+    if (party != DEALER) {
+        std::cout << "[DEBUG] Weight arrays allocated successfully" << std::endl;
+        std::cout.flush();
     }
 
     if (party == SERVER) {
+        std::cout << "[DEBUG] SERVER: Loading weights from file..." << std::endl;
+        std::cout.flush();
         Loader weights_loader(weights_file);
         for (int i = 0; i < num_layers; ++i) {
+            std::cout << "[DEBUG] SERVER: Loading layer " << i << " weights (size=" << weights[i].size() << ")..." << std::endl;
+            std::cout.flush();
             weights_loader.load(weights[i], f);
+            std::cout << "[DEBUG] SERVER: Loading layer " << i << " biases (size=" << biases[i].size() << ")..." << std::endl;
+            std::cout.flush();
             weights_loader.load(biases[i], f);
         }
+        std::cout << "[DEBUG] SERVER: Weights loaded. Total bytes read: " << weights_loader.get_bytes_read() << std::endl;
+        std::cout.flush();
     }
+
+    if (party != DEALER) {
+        std::cout << "[DEBUG] Starting input::call for weights (party=" << party << ")..." << std::endl;
+        std::cout.flush();
+    }
+
     for (int i = 0; i < num_layers; ++i) {
+        if (party != DEALER) {
+            std::cout << "[DEBUG] input::call weights[" << i << "] (size=" << weights[i].size() << ")..." << std::endl;
+            std::cout.flush();
+        }
         input::call(weights[i], SERVER);
+        if (party != DEALER) {
+            std::cout << "[DEBUG] input::call biases[" << i << "] (size=" << biases[i].size() << ")..." << std::endl;
+            std::cout.flush();
+        }
         input::call(biases[i], SERVER);
     }
 
+    if (party != DEALER) {
+        std::cout << "[DEBUG] All weight input::call completed" << std::endl;
+        std::cout.flush();
+    }
+
     // 预分配共享常量
+    if (party != DEALER) {
+        std::cout << "[DEBUG] Allocating shared constants..." << std::endl;
+        std::cout.flush();
+    }
+
     shark::span<u64> epsilon_share(1), one_share(1), two_share(1);
     shark::span<u64> eps_share(1), ones_input(input_dim);
 
     if (party == CLIENT) {
+        std::cout << "[DEBUG] CLIENT: Initializing constants..." << std::endl;
+        std::cout.flush();
         epsilon_share[0] = float_to_fixed(0.000001);
         one_share[0] = SCALAR_ONE;
         two_share[0] = float_to_fixed(2.0);
         eps_share[0] = float_to_fixed(eps);
         for (int i = 0; i < input_dim; ++i) ones_input[i] = SCALAR_ONE;
+        std::cout << "[DEBUG] CLIENT: Constants initialized" << std::endl;
+        std::cout.flush();
+    }
+
+    if (party != DEALER) {
+        std::cout << "[DEBUG] input::call for shared constants..." << std::endl;
+        std::cout.flush();
     }
 
     input::call(epsilon_share, CLIENT);
@@ -614,9 +719,20 @@ int main(int argc, char **argv) {
     input::call(eps_share, CLIENT);
     input::call(ones_input, CLIENT);
 
+    if (party != DEALER) {
+        std::cout << "[DEBUG] Shared constants input complete" << std::endl;
+        std::cout.flush();
+    }
+
     shark::utils::stop_timer("weights_input");
 
-    if (party != DEALER) peer->sync();
+    if (party != DEALER) {
+        std::cout << "[DEBUG] Syncing with peer..." << std::endl;
+        std::cout.flush();
+        peer->sync();
+        std::cout << "[DEBUG] Sync complete" << std::endl;
+        std::cout.flush();
+    }
 
     // ==================== 批量处理图片 ====================
     shark::utils::start_timer("batch_computation");
