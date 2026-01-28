@@ -203,13 +203,14 @@ shark::span<u64> compute_alpha_batch(shark::span<u64>& UB, shark::span<u64>& LB,
 }
 
 // ==================== 批量 scale_matrix_by_alpha ====================
-// 与原版相同: W_scaled[r][c] = W[r][c] * alpha[c]
-// 批量版本: 对每张图片分别缩放
+// W_scaled[img, r, c] = W[img, r, c] * alpha[img, c]
+// W: (rows * cols * B) - per-image矩阵
+// alpha: (cols * B) - per-image的alpha
+// 结果: (rows * cols * B)
 shark::span<u64> scale_matrix_by_alpha_batch(shark::span<u64>& W, shark::span<u64>& alpha,
                                               int rows, int cols, int B) {
-    // W: (rows * cols) - 共享权重
-    // alpha: (cols * B) - 每张图片的alpha
-    // 结果: (rows * cols * B)
+    // 扩展alpha: (cols * B) -> (rows * cols * B)
+    // alpha_expanded[img, r, c] = alpha[img, c]
     shark::span<u64> alpha_expanded(rows * cols * B);
     for(int img = 0; img < B; ++img) {
         for(int r = 0; r < rows; ++r) {
@@ -219,15 +220,8 @@ shark::span<u64> scale_matrix_by_alpha_batch(shark::span<u64>& W, shark::span<u6
         }
     }
 
-    // 广播W到每张图片
-    shark::span<u64> W_expanded(rows * cols * B);
-    for(int img = 0; img < B; ++img) {
-        for(int i = 0; i < rows * cols; ++i) {
-            W_expanded[img * rows * cols + i] = W[i];
-        }
-    }
-
-    auto result = mul::call(W_expanded, alpha_expanded);
+    // W 已经是 (rows * cols * B)，直接乘法
+    auto result = mul::call(W, alpha_expanded);
     return ars::call(result, f);
 }
 
