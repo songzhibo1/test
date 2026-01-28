@@ -473,6 +473,7 @@ public:
     }
 
     // ========== 中间层边界 (与原版逻辑完全相同) ==========
+    // 注意：所有协议调用必须在批量级别，不能在per-image循环内
     LayerBoundsBatch compute_middle_layer_bounds_batch(int layer_idx) {
         LayerBoundsBatch bounds;
         LayerInfo& curr_layer = layers[layer_idx];
@@ -520,68 +521,88 @@ public:
             ub_corr_total = add::call(ub_corr_total, ub_c);
 
             // constants += A_prop @ b[i]
-            // 需要对每张图片分别计算
-            auto b_batch = broadcast_bias_batch(layers[i].b, this_out, B);
+            // 批量计算: 对每张图片的A_prop乘以b，然后本地累加
+            // A_prop: (out_dim * this_out * B), b: (this_out)
+            // 我们需要计算每张图片的 sum_j(A_prop[row,j] * b[j])
+            // 这是一个本地操作，不需要协议调用
             for(int img = 0; img < B; ++img) {
-                // 提取这张图片的 A_prop slice: (out_dim, this_out)
-                shark::span<u64> A_slice(out_dim * this_out);
-                for(int j = 0; j < out_dim * this_out; ++j) {
-                    A_slice[j] = A_prop[img * out_dim * this_out + j];
-                }
-
-                // Ab = A_slice @ b
-                shark::span<u64> b_single(this_out);
-                for(int j = 0; j < this_out; ++j) b_single[j] = layers[i].b[j];
-
-                auto Ab = matmul::call(out_dim, this_out, 1, A_slice, b_single);
-                Ab = ars::call(Ab, f);
-
-                for(int j = 0; j < out_dim; ++j) {
-                    constants[img * out_dim + j] += Ab[j];
+                for(int row = 0; row < out_dim; ++row) {
+                    u64 dot = 0;
+                    for(int j = 0; j < this_out; ++j) {
+                        // A_prop[img, row, j] * b[j] (本地乘法，因为b是明文共享的一部分)
+                        dot += (A_prop[img * out_dim * this_out + row * this_out + j] *
+                                layers[i].b[j]) >> f;
+                    }
+                    constants[img * out_dim + row] += dot;
                 }
             }
 
             // A_prop = A_prop @ W[i]
-            // 对每张图片分别计算
+            // 批量matmul: 每张图片的A_prop (out_dim x this_out) @ W (this_out x this_in)
+            // = 结果 (out_dim x this_in x B)
+            // 使用批量matmul: matmul(out_dim * B, this_out, this_in, A_prop_reshaped, W)
+            // 但这需要重新组织数据...
+
+            // 简化方案: 本地矩阵乘法 (因为W是共享的，A_prop也是共享的)
+            // A_next[img, row, col] = sum_k A_prop[img, row, k] * W[k, col]
             shark::span<u64> A_next(out_dim * this_in * B);
             for(int img = 0; img < B; ++img) {
-                shark::span<u64> A_slice(out_dim * this_out);
-                for(int j = 0; j < out_dim * this_out; ++j) {
-                    A_slice[j] = A_prop[img * out_dim * this_out + j];
-                }
-
-                auto A_slice_next = matmul::call(out_dim, this_out, this_in, A_slice, layers[i].W);
-                A_slice_next = ars::call(A_slice_next, f);
-
-                for(int j = 0; j < out_dim * this_in; ++j) {
-                    A_next[img * out_dim * this_in + j] = A_slice_next[j];
+                for(int row = 0; row < out_dim; ++row) {
+                    for(int col = 0; col < this_in; ++col) {
+                        u64 sum = 0;
+                        for(int k = 0; k < this_out; ++k) {
+                            sum += (A_prop[img * out_dim * this_out + row * this_out + k] *
+                                    layers[i].W[k * this_in + col]) >> f;
+                        }
+                        A_next[img * out_dim * this_in + row * this_in + col] = sum;
+                    }
                 }
             }
             A_prop = A_next;
         }
 
-        // Ax0 = A_prop @ X0 (逐图片)
-        shark::span<u64> Ax0(out_dim * B);
+        // Ax0 = A_prop @ X0
+        // A_prop: (out_dim * input_dim * B), X0: (input_dim * B)
+        // 每张图片: A_prop[img] (out_dim x input_dim) @ x0[img] (input_dim) = (out_dim)
+        // 这需要协议调用因为X0是秘密共享的
+        // 但我们不能在循环内调用协议...
+
+        // 解决方案: 使用单次批量matmul
+        // 重组数据使得可以用一次matmul处理所有图片
+        // A_prop_flat: (out_dim * B, input_dim), X0: (input_dim, B)
+        // matmul(out_dim * B, input_dim, 1, ...) 不对...
+
+        // 正确方案: 逐元素乘法 + 本地求和
+        // Ax0[img, row] = sum_col A_prop[img, row, col] * X0[img, col]
+        // = sum over col of (A_prop * X0_expanded)[img, row, col]
+
+        // 扩展 X0 到 (out_dim * input_dim * B)
+        shark::span<u64> X0_expanded(out_dim * input_dim * B);
         for(int img = 0; img < B; ++img) {
-            shark::span<u64> A_slice(out_dim * input_dim);
-            for(int j = 0; j < out_dim * input_dim; ++j) {
-                A_slice[j] = A_prop[img * out_dim * input_dim + j];
-            }
-
-            shark::span<u64> x0_slice(input_dim);
-            for(int j = 0; j < input_dim; ++j) {
-                x0_slice[j] = X0[img * input_dim + j];
-            }
-
-            auto Ax0_slice = matmul::call(out_dim, input_dim, 1, A_slice, x0_slice);
-            Ax0_slice = ars::call(Ax0_slice, f);
-
-            for(int j = 0; j < out_dim; ++j) {
-                Ax0[img * out_dim + j] = Ax0_slice[j];
+            for(int row = 0; row < out_dim; ++row) {
+                for(int col = 0; col < input_dim; ++col) {
+                    X0_expanded[img * out_dim * input_dim + row * input_dim + col] = X0[img * input_dim + col];
+                }
             }
         }
 
-        // 计算 dualnorm (对每张图片的 A_prop)
+        // 批量乘法: A_prop * X0_expanded
+        auto AX_prod = mul::call(A_prop, X0_expanded);
+        AX_prod = ars::call(AX_prod, f);
+
+        // 本地求和得到 Ax0
+        shark::span<u64> Ax0(out_dim * B);
+        for(int img = 0; img < B; ++img) {
+            for(int row = 0; row < out_dim; ++row) {
+                u64 sum = 0;
+                for(int col = 0; col < input_dim; ++col) {
+                    sum += AX_prod[img * out_dim * input_dim + row * input_dim + col];
+                }
+                Ax0[img * out_dim + row] = sum;
+            }
+        }
+
+        // 计算 dualnorm (对每张图片的 A_prop) - 本地操作
         auto A_abs = secure_abs_batch(A_prop);
         shark::span<u64> dualnorm(out_dim * B);
         for(int img = 0; img < B; ++img) {
@@ -617,38 +638,51 @@ public:
     }
 
     // ========== 最终层边界 (与原版逻辑完全相同) ==========
+    // 注意：所有协议调用必须在批量级别，不能在per-image循环内
     std::pair<shark::span<u64>, shark::span<u64>> compute_final_diff_bounds_batch() {
         int last_idx = num_layers - 1;
         LayerInfo& last_layer = layers[last_idx];
         int in_dim = last_layer.input_dim;
         int out_dim = last_layer.output_dim;
 
-        // W_diff = diff_vec^T @ W (对每张图片)
-        // 结果: (in_dim * B)
-        shark::span<u64> W_diff(in_dim * B);
+        // W_diff = diff_vec^T @ W (批量计算)
+        // diff_vecs: (out_dim * B), W: (out_dim * in_dim)
+        // W_diff[img, j] = sum_k diff_vecs[img, k] * W[k, j]
+        // 使用批量乘法: 扩展W到(out_dim * in_dim * B), 扩展diff到(out_dim * in_dim * B)
+        shark::span<u64> W_expanded(out_dim * in_dim * B);
+        shark::span<u64> diff_expanded(out_dim * in_dim * B);
         for(int img = 0; img < B; ++img) {
-            shark::span<u64> diff_slice(out_dim);
-            for(int j = 0; j < out_dim; ++j) {
-                diff_slice[j] = diff_vecs[img * out_dim + j];
-            }
-
-            auto W_diff_slice = matmul::call(1, out_dim, in_dim, diff_slice, last_layer.W);
-            W_diff_slice = ars::call(W_diff_slice, f);
-
-            for(int j = 0; j < in_dim; ++j) {
-                W_diff[img * in_dim + j] = W_diff_slice[j];
+            for(int k = 0; k < out_dim; ++k) {
+                for(int j = 0; j < in_dim; ++j) {
+                    W_expanded[img * out_dim * in_dim + k * in_dim + j] = last_layer.W[k * in_dim + j];
+                    diff_expanded[img * out_dim * in_dim + k * in_dim + j] = diff_vecs[img * out_dim + k];
+                }
             }
         }
 
-        // b_diff = dot(b, diff_vec) 对每张图片
+        auto W_diff_prod = mul::call(W_expanded, diff_expanded);
+        W_diff_prod = ars::call(W_diff_prod, f);
+
+        // 求和得到 W_diff: (in_dim * B)
+        shark::span<u64> W_diff(in_dim * B);
+        for(int img = 0; img < B; ++img) {
+            for(int j = 0; j < in_dim; ++j) {
+                u64 sum = 0;
+                for(int k = 0; k < out_dim; ++k) {
+                    sum += W_diff_prod[img * out_dim * in_dim + k * in_dim + j];
+                }
+                W_diff[img * in_dim + j] = sum;
+            }
+        }
+
+        // b_diff = dot(b, diff_vec) - 本地计算 (b是共享的一部分)
         shark::span<u64> constants(B);
         for(int img = 0; img < B; ++img) {
-            shark::span<u64> diff_slice(out_dim);
+            u64 sum = 0;
             for(int j = 0; j < out_dim; ++j) {
-                diff_slice[j] = diff_vecs[img * out_dim + j];
+                sum += (last_layer.b[j] * diff_vecs[img * out_dim + j]) >> f;
             }
-            auto b_diff = dot_product_batch(last_layer.b, diff_slice, out_dim, 1);
-            constants[img] = b_diff[0];
+            constants[img] = sum;
         }
 
         // corrections
@@ -659,19 +693,21 @@ public:
             ub_corr_total[i] = 0;
         }
 
-        // A_prop: (in_dim * B)
+        // A_prop: (in_dim * B) - 但在反向传播中维度会变化
         auto A_prop = W_diff;
+        int curr_dim = in_dim;
 
         // 反向传播
         for(int i = last_idx - 1; i >= 0; --i) {
             int this_out = layers[i].output_dim;
             int this_in = layers[i].input_dim;
 
-            // A_prop = A_prop * alpha (逐元素)
+            // 此时 A_prop 应该是 (this_out * B)
+            // A_prop = A_prop * alpha (逐元素) - 批量协议调用
             auto A_scaled = mul::call(A_prop, layer_bounds[i].alpha);
             A_prop = ars::call(A_scaled, f);
 
-            // corrections
+            // corrections - 批量协议调用
             auto lb_c = compute_lb_correction_vec_batch(A_prop, layer_bounds[i].LB, this_out, B);
             auto ub_c = compute_ub_correction_vec_batch(A_prop, layer_bounds[i].LB, this_out, B);
 
@@ -680,50 +716,47 @@ public:
                 ub_corr_total[img] += ub_c[img];
             }
 
-            // constants += A_prop @ b
+            // constants += A_prop @ b - 本地计算
             for(int img = 0; img < B; ++img) {
-                shark::span<u64> A_slice(this_out);
+                u64 dot = 0;
                 for(int j = 0; j < this_out; ++j) {
-                    A_slice[j] = A_prop[img * this_out + j];
+                    dot += (A_prop[img * this_out + j] * layers[i].b[j]) >> f;
                 }
-                auto Ab = dot_product_batch(A_slice, layers[i].b, this_out, 1);
-                constants[img] += Ab[0];
+                constants[img] += dot;
             }
 
-            // A_prop = A_prop @ W
+            // A_prop = A_prop @ W - 本地矩阵乘法
+            // A_prop: (this_out * B), W: (this_out * this_in)
+            // A_next[img, j] = sum_k A_prop[img, k] * W[k, j]
             shark::span<u64> A_next(this_in * B);
             for(int img = 0; img < B; ++img) {
-                shark::span<u64> A_slice(this_out);
-                for(int j = 0; j < this_out; ++j) {
-                    A_slice[j] = A_prop[img * this_out + j];
-                }
-
-                auto A_slice_next = matmul::call(1, this_out, this_in, A_slice, layers[i].W);
-                A_slice_next = ars::call(A_slice_next, f);
-
                 for(int j = 0; j < this_in; ++j) {
-                    A_next[img * this_in + j] = A_slice_next[j];
+                    u64 sum = 0;
+                    for(int k = 0; k < this_out; ++k) {
+                        sum += (A_prop[img * this_out + k] * layers[i].W[k * this_in + j]) >> f;
+                    }
+                    A_next[img * this_in + j] = sum;
                 }
             }
             A_prop = A_next;
+            curr_dim = this_in;
         }
 
-        // Ax0 = A_prop @ x0
+        // Ax0 = A_prop @ x0 - 批量乘法 + 本地求和
+        // A_prop: (input_dim * B), X0: (input_dim * B)
+        auto ax_prod = mul::call(A_prop, X0);
+        ax_prod = ars::call(ax_prod, f);
+
         shark::span<u64> Ax0(B);
         for(int img = 0; img < B; ++img) {
-            shark::span<u64> A_slice(input_dim);
+            u64 sum = 0;
             for(int j = 0; j < input_dim; ++j) {
-                A_slice[j] = A_prop[img * input_dim + j];
+                sum += ax_prod[img * input_dim + j];
             }
-            shark::span<u64> x0_slice(input_dim);
-            for(int j = 0; j < input_dim; ++j) {
-                x0_slice[j] = X0[img * input_dim + j];
-            }
-            auto ax = dot_product_batch(A_slice, x0_slice, input_dim, 1);
-            Ax0[img] = ax[0];
+            Ax0[img] = sum;
         }
 
-        // dualnorm = sum(|A_prop|)
+        // dualnorm = sum(|A_prop|) - 批量绝对值
         auto A_abs = secure_abs_batch(A_prop);
         shark::span<u64> dualnorm(B);
         for(int img = 0; img < B; ++img) {
