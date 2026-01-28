@@ -137,6 +137,9 @@ target_link_libraries(crowntest_v2 ${PROJECT_NAME})
 add_executable(crowntest_v3 benchmarks/crown/crowntest_v3.cpp)
 target_link_libraries(crowntest_v3 ${PROJECT_NAME})
 
+add_executable(crowntest_v4 benchmarks/crown/crowntest_v4.cpp)
+target_link_libraries(crowntest_v4 ${PROJECT_NAME})
+
 set (MICROBENCHMARKS
     relu
     spline
