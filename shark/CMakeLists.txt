@@ -45,6 +45,7 @@ add_library(${PROJECT_NAME}
     src/protocols/mul.cpp
     src/protocols/lut.cpp
     src/protocols/reciprocal.cpp
+    src/protocols/matmul_ars.cpp
     src/crypto/dcfbit.cpp
     src/crypto/dcfring.cpp
     src/crypto/dpfring.cpp
@@ -142,6 +143,9 @@ target_link_libraries(crowntest_v4 ${PROJECT_NAME})
 
 add_executable(crowntest_v5 benchmarks/crown/crowntest_v5.cpp)
 target_link_libraries(crowntest_v5 ${PROJECT_NAME})
+
+add_executable(crowntest_v6 benchmarks/crown/crowntest_v6.cpp)
+target_link_libraries(crowntest_v6 ${PROJECT_NAME})
 
 set (MICROBENCHMARKS
     relu
