@@ -46,6 +46,7 @@ add_library(${PROJECT_NAME}
     src/protocols/lut.cpp
     src/protocols/reciprocal.cpp
     src/protocols/matmul_ars.cpp
+    src/protocols/mul_ars.cpp
     src/crypto/dcfbit.cpp
     src/crypto/dcfring.cpp
     src/crypto/dpfring.cpp

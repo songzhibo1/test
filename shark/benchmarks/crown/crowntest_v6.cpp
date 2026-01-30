@@ -1,11 +1,12 @@
 /**
  * crowntest_v6.cpp
  *
- * 高精度 CROWN MPC 实现 - 使用 fused matmul_ars 协议
+ * 高精度 CROWN MPC 实现 - 使用 fused matmul_ars + mul_ars 协议
  *
  * 关键改进:
- * - f=30 (更高精度，约 9 位有效数字)
- * - matmul_ars 融合协议：在 u128 上计算后立即右移，避免溢出
+ * - f=26 (更高精度，约 7-8 位有效数字)
+ * - matmul_ars 融合协议：matmul 在 u128 上计算后立即右移，避免溢出
+ * - mul_ars 融合协议：mul 在 u128 上计算后立即右移，避免溢出
  * - i128 本地累加
  * - 4次 Newton 迭代
  */
@@ -16,7 +17,8 @@
 #include <shark/protocols/output.hpp>
 #include <shark/protocols/relu.hpp>
 #include <shark/protocols/matmul.hpp>
-#include <shark/protocols/matmul_ars.hpp>  // 新的融合协议
+#include <shark/protocols/matmul_ars.hpp>  // matmul 融合协议
+#include <shark/protocols/mul_ars.hpp>     // mul 融合协议
 #include <shark/protocols/add.hpp>
 #include <shark/protocols/mul.hpp>
 #include <shark/protocols/reciprocal.hpp>
@@ -36,9 +38,9 @@ using i128 = __int128;
 using namespace shark::protocols;
 
 // ==================== 高精度配置 ====================
-// f=30 提供约 9 位有效数字 (2^30 ≈ 10^9)
-// 使用 matmul_ars 融合协议避免中间溢出
-const int f = 30;
+// f=26 提供约 7-8 位有效数字 (2^26 ≈ 6.7 × 10^7)
+// 使用 matmul_ars + mul_ars 融合协议避免中间溢出
+const int f = 26;
 const u64 SCALAR_ONE = 1ULL << f;
 
 // ==================== 调试 ====================
@@ -99,13 +101,11 @@ shark::span<u64> broadcast_scalar(shark::span<u64>& scalar, int size) {
 shark::span<u64> newton_refine(shark::span<u64>& a, shark::span<u64>& x_n,
                                shark::span<u64>& two_share) {
     size_t size = a.size();
-    auto ax = mul::call(a, x_n);
-    ax = ars::call(ax, f);
+    auto ax = mul_ars::call(f, a, x_n);
     shark::span<u64> two_vec(size);
     for (size_t i = 0; i < size; ++i) two_vec[i] = two_share[0];
     auto diff = secure_sub(two_vec, ax);
-    auto x_next = mul::call(x_n, diff);
-    return ars::call(x_next, f);
+    return mul_ars::call(f, x_n, diff);
 }
 
 // 4次 Newton 迭代
@@ -145,8 +145,7 @@ shark::span<u64> compute_alpha(shark::span<u64>& UB, shark::span<u64>& LB,
 
     auto den_inv = high_precision_reciprocal(den, two_share);
 
-    auto alpha = mul::call(num, den_inv);
-    alpha = ars::call(alpha, f);
+    auto alpha = mul_ars::call(f, num, den_inv);
 
     return secure_clamp_01(alpha, one_share);
 }
@@ -175,14 +174,12 @@ shark::span<u64> scale_by_alpha(shark::span<u64>& W, shark::span<u64>& alpha,
             alpha_expanded[r * cols + c] = alpha[c];
         }
     }
-    auto result = mul::call(W, alpha_expanded);
-    return ars::call(result, f);
+    return mul_ars::call(f, W, alpha_expanded);
 }
 
 // i128 高精度点积
 shark::span<u64> dot_product_i128(shark::span<u64>& A, shark::span<u64>& B, int size) {
-    auto prod = mul::call(A, B);
-    prod = ars::call(prod, f);
+    auto prod = mul_ars::call(f, A, B);
 
     shark::span<u64> result(1);
     i128 sum = 0;
@@ -216,8 +213,7 @@ shark::span<u64> lb_correction_vec_i128(shark::span<u64>& A, shark::span<u64>& L
     for(int i = 0; i < size; ++i) LB_neg[i] = -LB[i];
     auto relu_neg_LB = relu::call(LB_neg);
 
-    auto corr = mul::call(relu_neg_A, relu_neg_LB);
-    corr = ars::call(corr, f);
+    auto corr = mul_ars::call(f, relu_neg_A, relu_neg_LB);
 
     shark::span<u64> result(1);
     i128 sum = 0;
@@ -233,8 +229,7 @@ shark::span<u64> ub_correction_vec_i128(shark::span<u64>& A, shark::span<u64>& L
     for(int i = 0; i < size; ++i) LB_neg[i] = -LB[i];
     auto relu_neg_LB = relu::call(LB_neg);
 
-    auto corr = mul::call(relu_A, relu_neg_LB);
-    corr = ars::call(corr, f);
+    auto corr = mul_ars::call(f, relu_A, relu_neg_LB);
 
     shark::span<u64> result(1);
     i128 sum = 0;
@@ -260,8 +255,7 @@ shark::span<u64> lb_correction_matrix_i128(shark::span<u64>& A, shark::span<u64>
         }
     }
 
-    auto corr_mat = mul::call(relu_neg_A, relu_neg_LB_exp);
-    corr_mat = ars::call(corr_mat, f);
+    auto corr_mat = mul_ars::call(f, relu_neg_A, relu_neg_LB_exp);
 
     shark::span<u64> corr(rows);
     for(int r = 0; r < rows; ++r) {
@@ -289,8 +283,7 @@ shark::span<u64> ub_correction_matrix_i128(shark::span<u64>& A, shark::span<u64>
         }
     }
 
-    auto corr_mat = mul::call(relu_A, relu_neg_LB_exp);
-    corr_mat = ars::call(corr_mat, f);
+    auto corr_mat = mul_ars::call(f, relu_A, relu_neg_LB_exp);
 
     shark::span<u64> corr(rows);
     for(int r = 0; r < rows; ++r) {
@@ -359,8 +352,7 @@ public:
         auto dual_norm = row_sum_abs_i128(W_abs, L.out_dim, L.in_dim);
 
         auto eps_vec = broadcast_scalar(eps_share, L.out_dim);
-        auto radius = mul::call(dual_norm, eps_vec);
-        radius = ars::call(radius, f);
+        auto radius = mul_ars::call(f, dual_norm, eps_vec);
         radius = relu::call(radius);
 
         auto tmp = add::call(Wx0, radius);
@@ -417,8 +409,7 @@ public:
         auto dual_norm = row_sum_abs_i128(A_abs, L.out_dim, input_dim);
 
         auto eps_vec = broadcast_scalar(eps_share, L.out_dim);
-        auto radius = mul::call(dual_norm, eps_vec);
-        radius = ars::call(radius, f);
+        auto radius = mul_ars::call(f, dual_norm, eps_vec);
         radius = relu::call(radius);
 
         auto base = add::call(Ax0, constants);
@@ -455,8 +446,7 @@ public:
             auto& prev_L = layers[i];
             auto& prev_bnd = bounds[i];
 
-            auto A_scaled = mul::call(A, prev_bnd.alpha);
-            A = ars::call(A_scaled, f);
+            A = mul_ars::call(f, A, prev_bnd.alpha);
 
             auto lb_c = lb_correction_vec_i128(A, prev_bnd.LB, prev_L.out_dim);
             auto ub_c = ub_correction_vec_i128(A, prev_bnd.LB, prev_L.out_dim);
@@ -476,8 +466,7 @@ public:
         auto Ax0 = dot_product_i128(A, x0, input_dim);
 
         auto dual_norm = sum_abs_i128(A, input_dim);
-        auto radius = mul::call(dual_norm, eps_share);
-        radius = ars::call(radius, f);
+        auto radius = mul_ars::call(f, dual_norm, eps_share);
         radius = relu::call(radius);
 
         auto base = add::call(Ax0, constants);
@@ -539,11 +528,11 @@ int main(int argc, char **argv) {
 
     if (party != DEALER) {
         std::cout << "\n********************************************" << std::endl;
-        std::cout << "  CROWN V6 (High Precision: f=30 + matmul_ars)" << std::endl;
+        std::cout << "  CROWN V6 (High Precision: f=26 + matmul_ars + mul_ars)" << std::endl;
         std::cout << "  MODEL: " << model_name << std::endl;
         std::cout << "  Layers: " << num_layers << ", Hidden: " << hidden_dim << std::endl;
-        std::cout << "  Precision: f=" << f << " (~9 decimal digits)" << std::endl;
-        std::cout << "  Fused matmul_ars protocol: avoids u64 overflow" << std::endl;
+        std::cout << "  Precision: f=" << f << " (~7-8 decimal digits)" << std::endl;
+        std::cout << "  Fused matmul_ars + mul_ars: avoids u64 overflow" << std::endl;
         std::cout << "  Newton iterations: 4" << std::endl;
         std::cout << "  EPS: " << eps << " | True: " << true_label << " | Target: " << target_label << std::endl;
         std::cout << "********************************************" << std::endl;
@@ -619,7 +608,7 @@ int main(int argc, char **argv) {
         std::cout << "MODEL: " << model_name << std::endl;
         std::cout << "IMAGE: " << (custom_input_file.empty() ? std::to_string(image_id) + ".bin" : custom_input_file) << std::endl;
         std::cout << "EPS: " << eps << " | True: " << true_label << " | Target: " << target_label << std::endl;
-        std::cout << "Precision: f=" << f << " with matmul_ars fusion" << std::endl;
+        std::cout << "Precision: f=" << f << " with matmul_ars + mul_ars fusion" << std::endl;
         std::cout << "--------------------------------------------" << std::endl;
         std::cout << "MPC LB: " << std::fixed << std::setprecision(6) << fixed_to_float(final_LB[0]) << std::endl;
         std::cout << "MPC UB: " << std::fixed << std::setprecision(6) << fixed_to_float(final_UB[0]) << std::endl;
