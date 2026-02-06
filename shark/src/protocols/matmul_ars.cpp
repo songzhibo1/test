@@ -23,30 +23,23 @@ namespace shark {
 
             void gen(u64 a, u64 b, u64 c, int f, const shark::span<u64> &r_X, const shark::span<u64> &r_Y, shark::span<u64> &r_Z)
             {
+                // NOTE: parameter f is unused in gen - it's only used in eval
+                // gen must be IDENTICAL to original matmul gen to preserve Beaver triple correctness
+                (void)f;  // suppress unused parameter warning
+
                 always_assert(r_X.size() == a * b);
                 always_assert(r_Y.size() == b * c);
                 always_assert(r_Z.size() == a * c);
 
                 randomize(r_Z);
+                auto mat_r_X = getMat(a, b, r_X);
+                auto mat_r_Y = getMat(b, c, r_Y);
+                auto mat_r_Z = getMat(a, c, r_Z);
 
-                // Use u128 for intermediate computation to avoid overflow
-                auto mat_r_X = getMat(a, b, r_X).cast<u128>();
-                auto mat_r_Y = getMat(b, c, r_Y).cast<u128>();
-
-                shark::span<u128> r_C_128(a * c);
-                auto mat_r_C_128 = getMat(a, c, r_C_128);
-
-                // Compute (r_X @ r_Y) in u128
-                mat_r_C_128 = mat_r_X * mat_r_Y;
-
-                // Right shift by f, then add r_Z
                 shark::span<u64> r_C(a * c);
-                for (u64 i = 0; i < a * c; ++i) {
-                    // Arithmetic right shift on the matmul result
-                    i128 val = (i128)r_C_128[i];
-                    val >>= f;
-                    r_C[i] = (u64)(i64)val + r_Z[i];
-                }
+                auto mat_r_C = getMat(a, c, r_C);
+                // r_C = r_X @ r_Y + r_Z (NO SHIFT! Same as original matmul gen)
+                mat_r_C = mat_r_X * mat_r_Y + mat_r_Z;
 
                 send_authenticated_ashare(r_X);
                 send_authenticated_ashare(r_Y);
@@ -115,27 +108,22 @@ namespace shark {
 
             void gen_sh(u64 a, u64 b, u64 c, int f, const shark::span<u64> &r_X, const shark::span<u64> &r_Y, shark::span<u64> &r_Z)
             {
+                // NOTE: parameter f is unused in gen - it's only used in eval
+                (void)f;
+
                 always_assert(r_X.size() == a * b);
                 always_assert(r_Y.size() == b * c);
                 always_assert(r_Z.size() == a * c);
 
                 randomize(r_Z);
-
-                // Use u128 for intermediate computation
-                auto mat_r_X = getMat(a, b, r_X).cast<u128>();
-                auto mat_r_Y = getMat(b, c, r_Y).cast<u128>();
-
-                shark::span<u128> r_C_128(a * c);
-                auto mat_r_C_128 = getMat(a, c, r_C_128);
-
-                mat_r_C_128 = mat_r_X * mat_r_Y;
+                auto mat_r_X = getMat(a, b, r_X);
+                auto mat_r_Y = getMat(b, c, r_Y);
+                auto mat_r_Z = getMat(a, c, r_Z);
 
                 shark::span<u64> r_C(a * c);
-                for (u64 i = 0; i < a * c; ++i) {
-                    i128 val = (i128)r_C_128[i];
-                    val >>= f;
-                    r_C[i] = (u64)(i64)val + r_Z[i];
-                }
+                auto mat_r_C = getMat(a, c, r_C);
+                // r_C = r_X @ r_Y + r_Z (NO SHIFT!)
+                mat_r_C = mat_r_X * mat_r_Y + mat_r_Z;
 
                 send_sh_ashare(r_X);
                 send_sh_ashare(r_Y);

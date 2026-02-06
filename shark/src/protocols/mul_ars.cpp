@@ -20,20 +20,22 @@ namespace shark {
 
             void gen(int f, const shark::span<u64> &r_X, const shark::span<u64> &r_Y, shark::span<u64> &r_Z)
             {
+                // NOTE: parameter f is unused in gen - it's only used in eval
+                // gen must be IDENTICAL to original mul gen to preserve Beaver triple correctness
+                (void)f;
+
                 u64 n = r_X.size();
                 always_assert(r_Y.size() == n);
                 always_assert(r_Z.size() == n);
 
                 randomize(r_Z);
 
-                // Compute (r_X * r_Y) >> f using i128 to avoid overflow
+                // r_C = r_X * r_Y + r_Z (NO SHIFT! Same as original mul gen)
                 shark::span<u64> r_C(n);
                 #pragma omp parallel for
                 for (u64 i = 0; i < n; i++)
                 {
-                    i128 prod = (i128)(i64)r_X[i] * (i64)r_Y[i];
-                    prod >>= f;
-                    r_C[i] = (u64)(i64)prod + r_Z[i];
+                    r_C[i] = r_X[i] * r_Y[i] + r_Z[i];
                 }
 
                 send_authenticated_ashare(r_X);
@@ -92,19 +94,21 @@ namespace shark {
 
             void gen_sh(int f, const shark::span<u64> &r_X, const shark::span<u64> &r_Y, shark::span<u64> &r_Z)
             {
+                // NOTE: parameter f is unused in gen - it's only used in eval
+                (void)f;
+
                 u64 n = r_X.size();
                 always_assert(r_Y.size() == n);
                 always_assert(r_Z.size() == n);
 
                 randomize(r_Z);
 
+                // r_C = r_X * r_Y + r_Z (NO SHIFT!)
                 shark::span<u64> r_C(n);
                 #pragma omp parallel for
                 for (u64 i = 0; i < n; i++)
                 {
-                    i128 prod = (i128)(i64)r_X[i] * (i64)r_Y[i];
-                    prod >>= f;
-                    r_C[i] = (u64)(i64)prod + r_Z[i];
+                    r_C[i] = r_X[i] * r_Y[i] + r_Z[i];
                 }
 
                 send_sh_ashare(r_X);
