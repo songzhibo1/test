@@ -138,17 +138,16 @@ namespace shark {
                 }
 
                 // Custom reconstruct with right shift
-                shark::span<u64> Z_share_64(n);
-                for (u64 i = 0; i < n; ++i) {
-                    Z_share_64[i] = (u64)Z_share_128[i];
-                }
+                // CRITICAL: Must send full u128 shares to preserve upper bits
+                // Truncating to u64 before sending loses information needed for
+                // correct reconstruction when intermediate values exceed 64 bits
+                shark::span<u128> tmp(n);
 
-                shark::span<u64> tmp_64(n);
-                peer->send_array(Z_share_64);
-                peer->recv_array(tmp_64);
+                peer->send_array(Z_share_128);
+                peer->recv_array(tmp);
 
                 for (u64 i = 0; i < n; i++) {
-                    Z_share_128[i] += (u128)tmp_64[i];
+                    Z_share_128[i] += tmp[i];
 
                     // Arithmetic right shift before converting to u64
                     i128 signed_val = (i128)Z_share_128[i];
