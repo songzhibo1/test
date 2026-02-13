@@ -1,14 +1,12 @@
 /**
- * crowntest_v6.cpp
- *
- * 高精度 CROWN MPC 实现 - 使用 fused matmul_ars + mul_ars 协议
- *
- * 关键改进:
- * - f=26 (更高精度，约 7-8 位有效数字)
- * - matmul_ars 融合协议：matmul 在 u128 上计算后立即右移，避免溢出
- * - mul_ars 融合协议：mul 在 u128 上计算后立即右移，避免溢出
- * - i128 本地累加
- * - 4次 Newton 迭代
+ * crowntest_debug_fixed.cpp
+ * * 修改说明:
+ * 1. 引入了 debug_records 系统和 record_value 函数。
+ * 2. 将所有辅助函数(secure_sub, secure_abs等)的参数改为按值传递 (shark::span<u64>)，
+ * 以修复 "cannot bind non-const lvalue reference" 编译错误。
+ * 3. 在 CROWN 计算流程中插入了 record_value 调用。
+ * 4. 在 main 函数末尾添加了 debug 输出循环。
+ * 5. 保持了原有的 f=26, i128 累加, matmul_ars/mul_ars 融合协议逻辑不变。
  */
 
 #include <shark/protocols/init.hpp>
@@ -17,8 +15,8 @@
 #include <shark/protocols/output.hpp>
 #include <shark/protocols/relu.hpp>
 #include <shark/protocols/matmul.hpp>
-#include <shark/protocols/matmul_ars.hpp>  // matmul 融合协议
-#include <shark/protocols/mul_ars.hpp>     // mul 融合协议
+#include <shark/protocols/matmul_ars.hpp>
+#include <shark/protocols/mul_ars.hpp>
 #include <shark/protocols/add.hpp>
 #include <shark/protocols/mul.hpp>
 #include <shark/protocols/reciprocal.hpp>
@@ -31,22 +29,45 @@
 #include <cmath>
 #include <string>
 #include <algorithm>
+#include <map>
 
 using u64 = shark::u64;
 using i64 = int64_t;
 using i128 = __int128;
 using namespace shark::protocols;
 
-// ==================== 高精度配置 ====================
-// f=26 提供约 7-8 位有效数字 (2^26 ≈ 6.7 × 10^7)
-// 使用 matmul_ars + mul_ars 融合协议避免中间溢出
+// ==================== 精度配置 (保持不变) ====================
 const int f = 26;
 const u64 SCALAR_ONE = 1ULL << f;
 
-// ==================== 调试 ====================
+// ==================== Debug System (新增) ====================
+
+struct DebugRecord {
+    std::string name;
+    std::vector<u64> data; // 使用 vector 持久化存储数据
+    int layer_idx;
+
+    DebugRecord(const std::string& n, shark::span<u64> d, int layer = -1)
+        : name(n), layer_idx(layer) {
+        data.resize(d.size());
+        for (size_t i = 0; i < d.size(); ++i) {
+            data[i] = d[i];
+        }
+    }
+};
+
+std::vector<DebugRecord> debug_records;
 bool enable_debug = false;
 
-// ==================== 工具函数 ====================
+// 记录函数
+void record_value(const std::string& name, shark::span<u64> data, int layer_idx = -1) {
+    if (enable_debug) {
+        debug_records.emplace_back(name, data, layer_idx);
+    }
+}
+
+// ==================== Utils ====================
+
 class Loader {
     std::ifstream file;
 public:
@@ -75,14 +96,15 @@ u64 float_to_fixed(double val) {
     return (u64)(i64)(val * SCALAR_ONE);
 }
 
-// ==================== 基础安全操作 ====================
-shark::span<u64> secure_sub(shark::span<u64>& A, shark::span<u64>& B) {
+// ==================== 基础安全操作 (参数改为值传递以修复编译错误) ====================
+
+shark::span<u64> secure_sub(shark::span<u64> A, shark::span<u64> B) {
     shark::span<u64> B_neg(B.size());
     for(size_t i = 0; i < B.size(); ++i) B_neg[i] = -B[i];
     return add::call(A, B_neg);
 }
 
-shark::span<u64> secure_abs(shark::span<u64>& W) {
+shark::span<u64> secure_abs(shark::span<u64> W) {
     shark::span<u64> W_neg(W.size());
     for(size_t i = 0; i < W.size(); ++i) W_neg[i] = -W[i];
     auto pos = relu::call(W);
@@ -90,27 +112,26 @@ shark::span<u64> secure_abs(shark::span<u64>& W) {
     return add::call(pos, neg);
 }
 
-shark::span<u64> broadcast_scalar(shark::span<u64>& scalar, int size) {
+shark::span<u64> broadcast_scalar(shark::span<u64> scalar, int size) {
     shark::span<u64> vec(size);
     u64 val = scalar[0];
     for(int i = 0; i < size; ++i) vec[i] = val;
     return vec;
 }
 
-// ==================== 高精度 Reciprocal ====================
-shark::span<u64> newton_refine(shark::span<u64>& a, shark::span<u64>& x_n,
-                               shark::span<u64>& two_share) {
+// ==================== 高精度 Reciprocal (参数改为值传递) ====================
+
+shark::span<u64> newton_refine(shark::span<u64> a, shark::span<u64> x_n,
+                               shark::span<u64> two_share) {
     size_t size = a.size();
     auto ax = mul_ars::call(f, a, x_n);
-    shark::span<u64> two_vec(size);
-    for (size_t i = 0; i < size; ++i) two_vec[i] = two_share[0];
+    shark::span<u64> two_vec = broadcast_scalar(two_share, size); // 这里修改为调用 broadcast
     auto diff = secure_sub(two_vec, ax);
     return mul_ars::call(f, x_n, diff);
 }
 
-// 4次 Newton 迭代
-shark::span<u64> high_precision_reciprocal(shark::span<u64>& a,
-                                            shark::span<u64>& two_share) {
+shark::span<u64> high_precision_reciprocal(shark::span<u64> a,
+                                            shark::span<u64> two_share) {
     auto x = reciprocal::call(a, f);
     for (int i = 0; i < 4; ++i) {
         x = newton_refine(a, x, two_share);
@@ -118,8 +139,9 @@ shark::span<u64> high_precision_reciprocal(shark::span<u64>& a,
     return x;
 }
 
-// ==================== Alpha 计算 ====================
-shark::span<u64> secure_clamp_01(shark::span<u64>& x, shark::span<u64>& one_share) {
+// ==================== Alpha 计算 (参数改为值传递) ====================
+
+shark::span<u64> secure_clamp_01(shark::span<u64> x, shark::span<u64> one_share) {
     size_t size = x.size();
     auto ones = broadcast_scalar(one_share, size);
     auto one_minus_x = secure_sub(ones, x);
@@ -127,10 +149,10 @@ shark::span<u64> secure_clamp_01(shark::span<u64>& x, shark::span<u64>& one_shar
     return secure_sub(ones, relu_part);
 }
 
-shark::span<u64> compute_alpha(shark::span<u64>& UB, shark::span<u64>& LB,
-                                shark::span<u64>& epsilon_share,
-                                shark::span<u64>& one_share,
-                                shark::span<u64>& two_share) {
+shark::span<u64> compute_alpha(shark::span<u64> UB, shark::span<u64> LB,
+                                shark::span<u64> epsilon_share,
+                                shark::span<u64> one_share,
+                                shark::span<u64> two_share) {
     size_t size = UB.size();
 
     auto num = relu::call(UB);
@@ -150,10 +172,9 @@ shark::span<u64> compute_alpha(shark::span<u64>& UB, shark::span<u64>& LB,
     return secure_clamp_01(alpha, one_share);
 }
 
-// ==================== i128 高精度累加操作 ====================
+// ==================== i128 高精度累加操作 (参数改为值传递) ====================
 
-// 使用 i128 进行行求和 (避免累加溢出)
-shark::span<u64> row_sum_abs_i128(shark::span<u64>& W_abs, int rows, int cols) {
+shark::span<u64> row_sum_abs_i128(shark::span<u64> W_abs, int rows, int cols) {
     shark::span<u64> result(rows);
     for (int r = 0; r < rows; ++r) {
         i128 sum = 0;
@@ -165,8 +186,7 @@ shark::span<u64> row_sum_abs_i128(shark::span<u64>& W_abs, int rows, int cols) {
     return result;
 }
 
-// 矩阵乘 alpha
-shark::span<u64> scale_by_alpha(shark::span<u64>& W, shark::span<u64>& alpha,
+shark::span<u64> scale_by_alpha(shark::span<u64> W, shark::span<u64> alpha,
                                  int rows, int cols) {
     shark::span<u64> alpha_expanded(rows * cols);
     for(int r = 0; r < rows; ++r) {
@@ -177,8 +197,7 @@ shark::span<u64> scale_by_alpha(shark::span<u64>& W, shark::span<u64>& alpha,
     return mul_ars::call(f, W, alpha_expanded);
 }
 
-// i128 高精度点积
-shark::span<u64> dot_product_i128(shark::span<u64>& A, shark::span<u64>& B, int size) {
+shark::span<u64> dot_product_i128(shark::span<u64> A, shark::span<u64> B, int size) {
     auto prod = mul_ars::call(f, A, B);
 
     shark::span<u64> result(1);
@@ -190,8 +209,7 @@ shark::span<u64> dot_product_i128(shark::span<u64>& A, shark::span<u64>& B, int 
     return result;
 }
 
-// i128 高精度绝对值求和
-shark::span<u64> sum_abs_i128(shark::span<u64>& A, int size) {
+shark::span<u64> sum_abs_i128(shark::span<u64> A, int size) {
     auto A_abs = secure_abs(A);
     shark::span<u64> result(1);
     i128 sum = 0;
@@ -202,9 +220,9 @@ shark::span<u64> sum_abs_i128(shark::span<u64>& A, int size) {
     return result;
 }
 
-// ==================== Correction 计算 (i128) ====================
+// ==================== Correction 计算 (i128) (参数改为值传递) ====================
 
-shark::span<u64> lb_correction_vec_i128(shark::span<u64>& A, shark::span<u64>& LB, int size) {
+shark::span<u64> lb_correction_vec_i128(shark::span<u64> A, shark::span<u64> LB, int size) {
     shark::span<u64> A_neg(size);
     for(int i = 0; i < size; ++i) A_neg[i] = -A[i];
     auto relu_neg_A = relu::call(A_neg);
@@ -222,7 +240,7 @@ shark::span<u64> lb_correction_vec_i128(shark::span<u64>& A, shark::span<u64>& L
     return result;
 }
 
-shark::span<u64> ub_correction_vec_i128(shark::span<u64>& A, shark::span<u64>& LB, int size) {
+shark::span<u64> ub_correction_vec_i128(shark::span<u64> A, shark::span<u64> LB, int size) {
     auto relu_A = relu::call(A);
 
     shark::span<u64> LB_neg(size);
@@ -238,7 +256,7 @@ shark::span<u64> ub_correction_vec_i128(shark::span<u64>& A, shark::span<u64>& L
     return result;
 }
 
-shark::span<u64> lb_correction_matrix_i128(shark::span<u64>& A, shark::span<u64>& LB,
+shark::span<u64> lb_correction_matrix_i128(shark::span<u64> A, shark::span<u64> LB,
                                             int rows, int cols) {
     shark::span<u64> LB_neg(cols);
     for(int i = 0; i < cols; ++i) LB_neg[i] = -LB[i];
@@ -268,7 +286,7 @@ shark::span<u64> lb_correction_matrix_i128(shark::span<u64>& A, shark::span<u64>
     return corr;
 }
 
-shark::span<u64> ub_correction_matrix_i128(shark::span<u64>& A, shark::span<u64>& LB,
+shark::span<u64> ub_correction_matrix_i128(shark::span<u64> A, shark::span<u64> LB,
                                             int rows, int cols) {
     shark::span<u64> LB_neg(cols);
     for(int i = 0; i < cols; ++i) LB_neg[i] = -LB[i];
@@ -296,7 +314,7 @@ shark::span<u64> ub_correction_matrix_i128(shark::span<u64>& A, shark::span<u64>
     return corr;
 }
 
-// ==================== CROWN 算法 ====================
+// ==================== CROWN 算法 (已植入 record_value) ====================
 
 struct LayerInfo {
     shark::span<u64> W;
@@ -326,6 +344,7 @@ public:
 
     CROWNComputer(int in_dim) : input_dim(in_dim), num_layers(0) {}
 
+    // 这里的参数可以是引用，因为 set_input 被调用时传入的是变量
     void set_input(shark::span<u64>& x0_, shark::span<u64>& eps_,
                    shark::span<u64>& epsilon_, shark::span<u64>& one_,
                    shark::span<u64>& two_) {
@@ -347,6 +366,7 @@ public:
 
         // 使用 fused matmul_ars 协议
         auto Wx0 = matmul_ars::call(L.out_dim, L.in_dim, 1, f, L.W, x0);
+        record_value("Layer0_Wx0", Wx0, 0); // DEBUG
 
         auto W_abs = secure_abs(L.W);
         auto dual_norm = row_sum_abs_i128(W_abs, L.out_dim, L.in_dim);
@@ -354,14 +374,18 @@ public:
         auto eps_vec = broadcast_scalar(eps_share, L.out_dim);
         auto radius = mul_ars::call(f, dual_norm, eps_vec);
         radius = relu::call(radius);
+        record_value("Layer0_radius", radius, 0); // DEBUG
 
         auto tmp = add::call(Wx0, radius);
         bnd.UB = add::call(tmp, L.b);
+        record_value("Layer0_UB", bnd.UB, 0); // DEBUG
 
         tmp = secure_sub(Wx0, radius);
         bnd.LB = add::call(tmp, L.b);
+        record_value("Layer0_LB", bnd.LB, 0); // DEBUG
 
         bnd.alpha = compute_alpha(bnd.UB, bnd.LB, epsilon_share, one_share, two_share);
+        record_value("Layer0_alpha", bnd.alpha, 0); // DEBUG
 
         bounds.push_back(bnd);
         return bnd;
@@ -404,6 +428,7 @@ public:
 
         // 使用 fused matmul_ars 协议
         auto Ax0 = matmul_ars::call(L.out_dim, input_dim, 1, f, A, x0);
+        record_value("Layer" + std::to_string(layer_idx) + "_Ax0", Ax0, layer_idx); // DEBUG
 
         auto A_abs = secure_abs(A);
         auto dual_norm = row_sum_abs_i128(A_abs, L.out_dim, input_dim);
@@ -416,11 +441,14 @@ public:
 
         bnd.UB = add::call(base, ub_corr);
         bnd.UB = add::call(bnd.UB, radius);
+        record_value("Layer" + std::to_string(layer_idx) + "_UB", bnd.UB, layer_idx); // DEBUG
 
         bnd.LB = secure_sub(base, lb_corr);
         bnd.LB = secure_sub(bnd.LB, radius);
+        record_value("Layer" + std::to_string(layer_idx) + "_LB", bnd.LB, layer_idx); // DEBUG
 
         bnd.alpha = compute_alpha(bnd.UB, bnd.LB, epsilon_share, one_share, two_share);
+        record_value("Layer" + std::to_string(layer_idx) + "_alpha", bnd.alpha, layer_idx); // DEBUG
 
         bounds.push_back(bnd);
         return bnd;
@@ -464,10 +492,12 @@ public:
         }
 
         auto Ax0 = dot_product_i128(A, x0, input_dim);
+        record_value("Final_Ax0", Ax0); // DEBUG
 
         auto dual_norm = sum_abs_i128(A, input_dim);
         auto radius = mul_ars::call(f, dual_norm, eps_share);
         radius = relu::call(radius);
+        record_value("Final_radius", radius); // DEBUG
 
         auto base = add::call(Ax0, constants);
 
@@ -477,6 +507,7 @@ public:
         auto final_UB = add::call(base, ub_corr);
         final_UB = add::call(final_UB, radius);
 
+        // 使用 make_pair 明确构造，避免初始化列表推导错误
         return std::make_pair(final_LB, final_UB);
     }
 
@@ -494,10 +525,21 @@ public:
 int main(int argc, char **argv) {
     init::from_args(argc, argv);
 
-    std::string model_name = "eran_cifar_5layer_relu_100_best";
-    int input_dim = 3072, output_dim = 10, num_layers = 5, hidden_dim = 100;
-    int true_label = 1, target_label = 4, image_id = 6;
-    float eps = 0.0002;
+//    std::string model_name = "eran_cifar_5layer_relu_100_best";
+//    int input_dim = 3072, output_dim = 10, num_layers = 5, hidden_dim = 100;
+//    int true_label = 1, target_label = 4, image_id = 6;
+//    float eps = 0.002;
+//    std::string custom_input_file = "";
+
+    std::string model_name = "vnncomp_mnist_7layer_relu_256_best";
+    int input_dim = 784;
+    int output_dim = 10;
+    int num_layers = 7;
+    int hidden_dim = 256;
+    int true_label = 1;
+    int target_label = 5;
+    float eps = 0.015;
+    int image_id = 2;
     std::string custom_input_file = "";
 
     for (int i = 1; i < argc; ++i) {
@@ -529,12 +571,9 @@ int main(int argc, char **argv) {
     if (party != DEALER) {
         std::cout << "\n********************************************" << std::endl;
         std::cout << "  CROWN V6 (High Precision: f=26 + matmul_ars + mul_ars)" << std::endl;
+        std::cout << "  DEBUG MODE: " << (enable_debug ? "ON" : "OFF") << std::endl;
         std::cout << "  MODEL: " << model_name << std::endl;
-        std::cout << "  Layers: " << num_layers << ", Hidden: " << hidden_dim << std::endl;
         std::cout << "  Precision: f=" << f << " (~7-8 decimal digits)" << std::endl;
-        std::cout << "  Fused matmul_ars + mul_ars: avoids u64 overflow" << std::endl;
-        std::cout << "  Newton iterations: 4" << std::endl;
-        std::cout << "  EPS: " << eps << " | True: " << true_label << " | Target: " << target_label << std::endl;
         std::cout << "********************************************" << std::endl;
     }
 
@@ -600,13 +639,38 @@ int main(int argc, char **argv) {
     shark::utils::stop_timer("crown_calculation");
     shark::utils::stop_timer("End_to_end_time");
 
+    // ==================== Output Debug Records ====================
+    if (enable_debug) {
+        for (auto& record : debug_records) {
+            // 将 vector 转换为 span 进行 output::call
+            shark::span<u64> data_span(record.data.data(), record.data.size());
+            output::call(data_span);
+        }
+    }
+
     output::call(final_LB);
     output::call(final_UB);
 
     if (party != DEALER) {
+        // 打印 Debug 信息
+        if (enable_debug) {
+            std::cout << "\n============================================" << std::endl;
+            std::cout << "Debug Output" << std::endl;
+            std::cout << "============================================" << std::endl;
+            for (auto& record : debug_records) {
+                std::cout << record.name << " (L" << record.layer_idx << "): [";
+                int print_count = std::min((int)record.data.size(), 10);
+                for (int i = 0; i < print_count; ++i) {
+                    std::cout << std::fixed << std::setprecision(6) << fixed_to_float(record.data[i]);
+                    if (i < print_count - 1) std::cout << ", ";
+                }
+                if ((int)record.data.size() > 10) std::cout << ", ...";
+                std::cout << "]" << std::endl;
+            }
+        }
+
         std::cout << "\n============================================" << std::endl;
         std::cout << "MODEL: " << model_name << std::endl;
-        std::cout << "IMAGE: " << (custom_input_file.empty() ? std::to_string(image_id) + ".bin" : custom_input_file) << std::endl;
         std::cout << "EPS: " << eps << " | True: " << true_label << " | Target: " << target_label << std::endl;
         std::cout << "Precision: f=" << f << " with matmul_ars + mul_ars fusion" << std::endl;
         std::cout << "--------------------------------------------" << std::endl;
