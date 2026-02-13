@@ -103,17 +103,19 @@ namespace shark {
 
                 randomize(r_Z);
 
-                // r_C = r_X * r_Y + r_Z (NO SHIFT!)
-                shark::span<u64> r_C(n);
+                // CRITICAL: Compute r_C = r_X * r_Y + r_Z in u128 to avoid overflow
+                // The product r_X * r_Y can exceed 64 bits when inputs are large
+                // Using u128 ensures the Beaver triple is computed with full precision
+                shark::span<u128> r_C_128(n);
                 #pragma omp parallel for
                 for (u64 i = 0; i < n; i++)
                 {
-                    r_C[i] = r_X[i] * r_Y[i] + r_Z[i];
+                    r_C_128[i] = (u128)r_X[i] * (u128)r_Y[i] + (u128)r_Z[i];
                 }
 
                 send_sh_ashare(r_X);
                 send_sh_ashare(r_Y);
-                send_sh_ashare(r_C);
+                send_sh_ashare_u128(r_C_128);  // Send u128 shares to preserve full precision
             }
 
             void eval_sh(int f, const shark::span<u64> &X, const shark::span<u64> &Y, shark::span<u64> &Z)
@@ -125,16 +127,17 @@ namespace shark {
                 shark::utils::start_timer("key_read");
                 auto r_X = recv_sh_ashare(n);
                 auto r_Y = recv_sh_ashare(n);
-                auto r_Z = recv_sh_ashare(n);
+                // Receive r_C (Beaver triple result) as u128 to match gen_sh's u128 computation
+                auto r_C_128 = recv_sh_ashare_u128(n);
                 shark::utils::stop_timer("key_read");
 
                 shark::span<u128> Z_share_128(n);
 
-                // Z = r_Z + X * Y - r_X * Y - X * r_Y
+                // Z = r_C + X * Y - r_X * Y - X * r_Y (r_C = r_X * r_Y + r_Z in gen)
                 #pragma omp parallel for
                 for (u64 i = 0; i < n; i++)
                 {
-                    Z_share_128[i] = (u128)r_Z[i] + ((u128)X[i] * u128(party) - (u128)r_X[i]) * (u128)Y[i] - (u128)r_Y[i] * (u128)X[i];
+                    Z_share_128[i] = r_C_128[i] + ((u128)X[i] * u128(party) - (u128)r_X[i]) * (u128)Y[i] - (u128)r_Y[i] * (u128)X[i];
                 }
 
                 // Custom reconstruct with right shift

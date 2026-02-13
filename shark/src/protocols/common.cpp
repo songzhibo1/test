@@ -502,6 +502,33 @@ namespace shark
             client->send_array(share_1);
         }
 
+        /// Semi-honest: send u128 arithmetic share without MAC tags (dealer side)
+        /// Used for ARS protocols where intermediate products exceed 64 bits
+        void send_sh_ashare_u128(const shark::span<u128> &share)
+        {
+            u64 size = share.size();
+            shark::span<u128> share_0(size);
+            shark::span<u128> share_1(size);
+
+            // Generate random u128 shares
+            for (u64 i = 0; i < size; i++)
+            {
+                // Generate two random u64 values and combine into u128
+                u64 lo = rand<u64>();
+                u64 hi = rand<u64>();
+                share_0[i] = (u128(hi) << 64) | lo;
+            }
+
+            #pragma omp parallel for
+            for (u64 i = 0; i < size; i++)
+            {
+                share_1[i] = share[i] - share_0[i];
+            }
+
+            server->send_array(share_0);
+            client->send_array(share_1);
+        }
+
         /// Semi-honest: send boolean share without MAC tags (dealer side)
         void send_sh_bshare(const shark::span<u8> &share)
         {
@@ -542,6 +569,14 @@ namespace shark
         shark::span<u64> recv_sh_ashare(u64 size)
         {
             auto share = dealer->recv_array<u64>(size);
+            return share;
+        }
+
+        /// Semi-honest: receive u128 arithmetic share without MAC tags (evaluator side)
+        /// Used for ARS protocols where intermediate products exceed 64 bits
+        shark::span<u128> recv_sh_ashare_u128(u64 size)
+        {
+            auto share = dealer->recv_array<u128>(size);
             return share;
         }
 

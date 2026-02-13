@@ -116,18 +116,27 @@ namespace shark {
                 always_assert(r_Z.size() == a * c);
 
                 randomize(r_Z);
-                auto mat_r_X = getMat(a, b, r_X);
-                auto mat_r_Y = getMat(b, c, r_Y);
-                auto mat_r_Z = getMat(a, c, r_Z);
 
-                shark::span<u64> r_C(a * c);
-                auto mat_r_C = getMat(a, c, r_C);
-                // r_C = r_X @ r_Y + r_Z (NO SHIFT!)
+                // CRITICAL: Compute r_C = r_X @ r_Y + r_Z in u128 to avoid overflow
+                // The product r_X @ r_Y can exceed 64 bits when inputs are large
+                // Using u128 ensures the Beaver triple is computed with full precision
+                auto mat_r_X = getMat(a, b, r_X).cast<u128>();
+                auto mat_r_Y = getMat(b, c, r_Y).cast<u128>();
+
+                shark::span<u128> r_Z_128(a * c);
+                for (u64 i = 0; i < a * c; i++) {
+                    r_Z_128[i] = (u128)r_Z[i];
+                }
+                auto mat_r_Z = getMat(a, c, r_Z_128);
+
+                shark::span<u128> r_C_128(a * c);
+                auto mat_r_C = getMat(a, c, r_C_128);
+                // r_C = r_X @ r_Y + r_Z (in u128, NO SHIFT!)
                 mat_r_C = mat_r_X * mat_r_Y + mat_r_Z;
 
                 send_sh_ashare(r_X);
                 send_sh_ashare(r_Y);
-                send_sh_ashare(r_C);
+                send_sh_ashare_u128(r_C_128);  // Send u128 shares to preserve full precision
             }
 
             void eval_sh(u64 a, u64 b, u64 c, int f, const shark::span<u64> &X, const shark::span<u64> &Y, shark::span<u64> &Z)
@@ -135,10 +144,11 @@ namespace shark {
                 shark::utils::start_timer("key_read");
                 auto r_X = recv_sh_ashare(a * b);
                 auto r_Y = recv_sh_ashare(b * c);
-                auto r_Z = recv_sh_ashare(a * c);
+                // Receive r_C (Beaver triple result) as u128 to match gen_sh's u128 computation
+                auto r_C_128 = recv_sh_ashare_u128(a * c);
                 shark::utils::stop_timer("key_read");
 
-                // Use u128 for computation
+                // Use u128 for computation to match the u128 Beaver triple
                 auto mat_X = getMat(a, b, X).cast<u128>();
                 auto mat_Y = getMat(b, c, Y).cast<u128>();
 
@@ -147,10 +157,10 @@ namespace shark {
 
                 auto mat_r_X = getMat(a, b, r_X).cast<u128>();
                 auto mat_r_Y = getMat(b, c, r_Y).cast<u128>();
-                auto mat_r_Z = getMat(a, c, r_Z).cast<u128>();
+                auto mat_r_C = getMat(a, c, r_C_128);  // Already u128
 
-                // Z = r_Z + X @ Y - r_X @ Y - X @ r_Y
-                mat_Z_share = mat_r_Z + (mat_X * u128(party) - mat_r_X) * mat_Y;
+                // Z = r_C + X @ Y - r_X @ Y - X @ r_Y (r_C = r_X @ r_Y + r_Z in gen)
+                mat_Z_share = mat_r_C + (mat_X * u128(party) - mat_r_X) * mat_Y;
                 mat_Z_share -= mat_X * mat_r_Y;
 
                 // Custom reconstruct with right shift

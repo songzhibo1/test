@@ -88,6 +88,7 @@ namespace shark {
 
         /// Semi-honest: send share without MAC tags (dealer side)
         void send_sh_ashare(const shark::span<u64> &share);
+        void send_sh_ashare_u128(const shark::span<u128> &share);  // For ARS protocols with u128 intermediates
         void send_sh_bshare(const shark::span<u8> &share);
         void send_sh_dcfbit(const shark::span<u64> &share, int bin);
         void send_sh_dcfring(const shark::span<u64> &share, int bin);
@@ -95,6 +96,7 @@ namespace shark {
 
         /// Semi-honest: receive share without MAC tags (evaluator side)
         shark::span<u64> recv_sh_ashare(u64 size);
+        shark::span<u128> recv_sh_ashare_u128(u64 size);  // For ARS protocols with u128 intermediates
         shark::span<u8> recv_sh_bshare(u64 size);
         shark::span<crypto::DCFBitKeySH> recv_sh_dcfbit(u64 size, int bin);
         shark::span<crypto::DCFRingKeySH> recv_sh_dcfring(u64 size, int bin);
