@@ -117,21 +117,20 @@ namespace shark {
 
                 randomize(r_Z);
 
-                // CRITICAL: r_C must use u64 share to match r_X and r_Y!
-                // Beaver triple correctness requires all shares to be in the same ring.
-                // The u128 computation happens in eval, not gen.
-                auto mat_r_X = getMat(a, b, r_X);
-                auto mat_r_Y = getMat(b, c, r_Y);
-                auto mat_r_Z = getMat(a, c, r_Z);
+                // CRITICAL: r_C must be computed in u128 to avoid overflow!
+                // matmul_ars performs computation in u128, so Beaver triple must also be in u128.
+                auto mat_r_X = getMat(a, b, r_X).cast<u128>();
+                auto mat_r_Y = getMat(b, c, r_Y).cast<u128>();
+                auto mat_r_Z = getMat(a, c, r_Z).cast<u128>();
 
-                shark::span<u64> r_C(a * c);
+                shark::span<u128> r_C(a * c);
                 auto mat_r_C = getMat(a, c, r_C);
-                // Same as original matmul: r_C = r_X @ r_Y + r_Z (mod 2^64)
+                // r_C = r_X @ r_Y + r_Z (in u128 to avoid overflow)
                 mat_r_C = mat_r_X * mat_r_Y + mat_r_Z;
 
                 send_sh_ashare(r_X);
                 send_sh_ashare(r_Y);
-                send_sh_ashare(r_C);  // u64 share, same as r_X and r_Y
+                send_sh_ashare_u128(r_C);  // u128 share to preserve full precision
             }
 
             void eval_sh(u64 a, u64 b, u64 c, int f, const shark::span<u64> &X, const shark::span<u64> &Y, shark::span<u64> &Z)
@@ -139,8 +138,8 @@ namespace shark {
                 shark::utils::start_timer("key_read");
                 auto r_X = recv_sh_ashare(a * b);
                 auto r_Y = recv_sh_ashare(b * c);
-                // Receive r_C as u64 share (same as r_X, r_Y) to maintain Beaver triple consistency
-                auto r_C = recv_sh_ashare(a * c);
+                // Receive r_C as u128 share to maintain Beaver triple consistency with gen_sh
+                auto r_C = recv_sh_ashare_u128(a * c);
                 shark::utils::stop_timer("key_read");
 
                 // Use u128 for intermediate computation to avoid overflow
@@ -152,7 +151,7 @@ namespace shark {
 
                 auto mat_r_X = getMat(a, b, r_X).cast<u128>();
                 auto mat_r_Y = getMat(b, c, r_Y).cast<u128>();
-                auto mat_r_C = getMat(a, c, r_C).cast<u128>();  // Cast u64 to u128 for computation
+                auto mat_r_C = getMat(a, c, r_C);  // Already u128, no cast needed
 
                 // Z = r_C + X @ Y - r_X @ Y - X @ r_Y (r_C = r_X @ r_Y + r_Z in gen)
                 mat_Z_share = mat_r_C + (mat_X * u128(party) - mat_r_X) * mat_Y;

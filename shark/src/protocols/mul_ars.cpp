@@ -103,20 +103,19 @@ namespace shark {
 
                 randomize(r_Z);
 
-                // CRITICAL: r_C must use u64 share to match r_X and r_Y!
-                // Beaver triple correctness requires all shares to be in the same ring.
-                // The u128 computation happens in eval, not gen.
-                shark::span<u64> r_C(n);
+                // CRITICAL: r_C must be computed in u128 to avoid overflow!
+                // mul_ars performs computation in u128, so Beaver triple must also be in u128.
+                shark::span<u128> r_C(n);
                 #pragma omp parallel for
                 for (u64 i = 0; i < n; i++)
                 {
-                    // Same as original mul: r_C = r_X * r_Y + r_Z (mod 2^64)
-                    r_C[i] = r_X[i] * r_Y[i] + r_Z[i];
+                    // r_C = r_X * r_Y + r_Z (in u128 to avoid overflow)
+                    r_C[i] = (u128)r_X[i] * (u128)r_Y[i] + (u128)r_Z[i];
                 }
 
                 send_sh_ashare(r_X);
                 send_sh_ashare(r_Y);
-                send_sh_ashare(r_C);  // u64 share, same as r_X and r_Y
+                send_sh_ashare_u128(r_C);  // u128 share to preserve full precision
             }
 
             void eval_sh(int f, const shark::span<u64> &X, const shark::span<u64> &Y, shark::span<u64> &Z)
@@ -128,8 +127,8 @@ namespace shark {
                 shark::utils::start_timer("key_read");
                 auto r_X = recv_sh_ashare(n);
                 auto r_Y = recv_sh_ashare(n);
-                // Receive r_C as u64 share (same as r_X, r_Y) to maintain Beaver triple consistency
-                auto r_C = recv_sh_ashare(n);
+                // Receive r_C as u128 share to maintain Beaver triple consistency with gen_sh
+                auto r_C = recv_sh_ashare_u128(n);
                 shark::utils::stop_timer("key_read");
 
                 shark::span<u128> Z_share_128(n);
@@ -139,7 +138,7 @@ namespace shark {
                 #pragma omp parallel for
                 for (u64 i = 0; i < n; i++)
                 {
-                    Z_share_128[i] = (u128)r_C[i] + ((u128)X[i] * u128(party) - (u128)r_X[i]) * (u128)Y[i] - (u128)r_Y[i] * (u128)X[i];
+                    Z_share_128[i] = r_C[i] + ((u128)X[i] * u128(party) - (u128)r_X[i]) * (u128)Y[i] - (u128)r_Y[i] * (u128)X[i];
                 }
 
                 // Reconstruct in u128 to preserve high bits, then apply arithmetic right shift
