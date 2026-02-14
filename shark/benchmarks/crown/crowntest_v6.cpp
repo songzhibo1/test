@@ -143,8 +143,11 @@ shark::span<u64> high_precision_reciprocal(shark::span<u64> a,
 
 shark::span<u64> secure_clamp_01(shark::span<u64> x, shark::span<u64> one_share) {
     size_t size = x.size();
+    // First clamp to [0, infinity): max(x, 0)
+    auto clamped_low = relu::call(x);
+    // Then clamp to [0, 1]: min(max(x, 0), 1) = 1 - relu(1 - max(x, 0))
     auto ones = broadcast_scalar(one_share, size);
-    auto one_minus_x = secure_sub(ones, x);
+    auto one_minus_x = secure_sub(ones, clamped_low);
     auto relu_part = relu::call(one_minus_x);
     return secure_sub(ones, relu_part);
 }
@@ -464,9 +467,10 @@ public:
 
         auto b_diff = dot_product_i128(last_L.b, diff_vec, last_L.out_dim);
 
-        auto constants = b_diff;
-        shark::span<u64> lb_corr(1); lb_corr[0] = 0;
-        shark::span<u64> ub_corr(1); ub_corr[0] = 0;
+        // Use i128 for accumulation to prevent overflow
+        i128 constants_acc = (i64)b_diff[0];
+        i128 lb_corr_acc = 0;
+        i128 ub_corr_acc = 0;
 
         auto A = W_diff;
 
@@ -478,11 +482,11 @@ public:
 
             auto lb_c = lb_correction_vec_i128(A, prev_bnd.LB, prev_L.out_dim);
             auto ub_c = ub_correction_vec_i128(A, prev_bnd.LB, prev_L.out_dim);
-            lb_corr[0] += lb_c[0];
-            ub_corr[0] += ub_c[0];
+            lb_corr_acc += (i64)lb_c[0];
+            ub_corr_acc += (i64)ub_c[0];
 
             auto Ab = dot_product_i128(A, prev_L.b, prev_L.out_dim);
-            constants[0] += Ab[0];
+            constants_acc += (i64)Ab[0];
 
             // 使用 fused matmul_ars 协议
             auto A_next = matmul_ars::call(1, prev_L.out_dim, prev_L.in_dim, f, A, prev_L.W);
@@ -490,6 +494,14 @@ public:
             for(int k = 0; k < prev_L.in_dim; ++k) A_vec[k] = A_next[k];
             A = A_vec;
         }
+
+        // Convert i128 accumulators back to u64 spans
+        shark::span<u64> constants(1);
+        constants[0] = (u64)(i64)constants_acc;
+        shark::span<u64> lb_corr(1);
+        lb_corr[0] = (u64)(i64)lb_corr_acc;
+        shark::span<u64> ub_corr(1);
+        ub_corr[0] = (u64)(i64)ub_corr_acc;
 
         auto Ax0 = dot_product_i128(A, x0, input_dim);
         record_value("Final_Ax0", Ax0); // DEBUG
