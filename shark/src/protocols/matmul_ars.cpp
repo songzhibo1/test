@@ -11,6 +11,19 @@ using i128 = __int128;
 using i64 = int64_t;
 
 namespace shark {
+
+// Helper function: sign-extend u64 to u128 (treating u64 as signed fixed-point)
+// This is CRITICAL for correct arithmetic when values can be negative
+inline u128 sign_extend_u64_to_u128(u64 val) {
+    return (u128)(i128)(i64)val;
+}
+
+// Helper function: create sign-extended u128 matrix from u64 span
+inline void sign_extend_matrix(const shark::span<u64>& src, shark::span<u128>& dst) {
+    for (u64 i = 0; i < src.size(); i++) {
+        dst[i] = sign_extend_u64_to_u128(src[i]);
+    }
+}
     namespace protocols {
         // Forward declaration of batchCheckArithmBuffer from common.cpp
         extern std::vector<u128> batchCheckArithmBuffer;
@@ -117,15 +130,24 @@ namespace shark {
 
                 randomize(r_Z);
 
-                // CRITICAL: r_C must be computed in u128 to avoid overflow!
-                // matmul_ars performs computation in u128, so Beaver triple must also be in u128.
-                auto mat_r_X = getMat(a, b, r_X).cast<u128>();
-                auto mat_r_Y = getMat(b, c, r_Y).cast<u128>();
-                auto mat_r_Z = getMat(a, c, r_Z).cast<u128>();
+                // CRITICAL: Use sign extension when converting u64 to u128!
+                // Fixed-point numbers can be negative (high bit = 1).
+                // Zero extension would turn negative values into huge positive numbers.
+                shark::span<u128> r_X_128(a * b);
+                shark::span<u128> r_Y_128(b * c);
+                shark::span<u128> r_Z_128(a * c);
+
+                sign_extend_matrix(r_X, r_X_128);
+                sign_extend_matrix(r_Y, r_Y_128);
+                sign_extend_matrix(r_Z, r_Z_128);
+
+                auto mat_r_X = getMat(a, b, r_X_128);
+                auto mat_r_Y = getMat(b, c, r_Y_128);
+                auto mat_r_Z = getMat(a, c, r_Z_128);
 
                 shark::span<u128> r_C(a * c);
                 auto mat_r_C = getMat(a, c, r_C);
-                // r_C = r_X @ r_Y + r_Z (in u128 to avoid overflow)
+                // r_C = r_X @ r_Y + r_Z (in u128 with proper sign extension)
                 mat_r_C = mat_r_X * mat_r_Y + mat_r_Z;
 
                 send_sh_ashare(r_X);
@@ -142,15 +164,26 @@ namespace shark {
                 auto r_C = recv_sh_ashare_u128(a * c);
                 shark::utils::stop_timer("key_read");
 
-                // Use u128 for intermediate computation to avoid overflow
-                auto mat_X = getMat(a, b, X).cast<u128>();
-                auto mat_Y = getMat(b, c, Y).cast<u128>();
+                // CRITICAL: Use sign extension when converting u64 to u128!
+                // Fixed-point numbers can be negative (high bit = 1).
+                shark::span<u128> X_128(a * b);
+                shark::span<u128> Y_128(b * c);
+                shark::span<u128> r_X_128(a * b);
+                shark::span<u128> r_Y_128(b * c);
+
+                sign_extend_matrix(X, X_128);
+                sign_extend_matrix(Y, Y_128);
+                sign_extend_matrix(r_X, r_X_128);
+                sign_extend_matrix(r_Y, r_Y_128);
+
+                auto mat_X = getMat(a, b, X_128);
+                auto mat_Y = getMat(b, c, Y_128);
 
                 shark::span<u128> Z_share_128(a * c);
                 auto mat_Z_share = getMat(a, c, Z_share_128);
 
-                auto mat_r_X = getMat(a, b, r_X).cast<u128>();
-                auto mat_r_Y = getMat(b, c, r_Y).cast<u128>();
+                auto mat_r_X = getMat(a, b, r_X_128);
+                auto mat_r_Y = getMat(b, c, r_Y_128);
                 auto mat_r_C = getMat(a, c, r_C);  // Already u128, no cast needed
 
                 // Z = r_C + X @ Y - r_X @ Y - X @ r_Y (r_C = r_X @ r_Y + r_Z in gen)

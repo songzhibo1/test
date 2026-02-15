@@ -8,6 +8,12 @@ using i128 = __int128;
 using i64 = int64_t;
 
 namespace shark {
+
+// Helper function: sign-extend u64 to u128 (treating u64 as signed fixed-point)
+// This is CRITICAL for correct arithmetic when values can be negative
+inline u128 sign_extend_u64_to_u128(u64 val) {
+    return (u128)(i128)(i64)val;
+}
     namespace protocols {
         // Forward declaration of batchCheckArithmBuffer from common.cpp
         extern std::vector<u128> batchCheckArithmBuffer;
@@ -103,14 +109,18 @@ namespace shark {
 
                 randomize(r_Z);
 
-                // CRITICAL: r_C must be computed in u128 to avoid overflow!
-                // mul_ars performs computation in u128, so Beaver triple must also be in u128.
+                // CRITICAL: Use sign extension when converting u64 to u128!
+                // Fixed-point numbers can be negative (high bit = 1).
+                // Zero extension would turn negative values into huge positive numbers.
                 shark::span<u128> r_C(n);
                 #pragma omp parallel for
                 for (u64 i = 0; i < n; i++)
                 {
-                    // r_C = r_X * r_Y + r_Z (in u128 to avoid overflow)
-                    r_C[i] = (u128)r_X[i] * (u128)r_Y[i] + (u128)r_Z[i];
+                    // r_C = r_X * r_Y + r_Z (with proper sign extension)
+                    u128 rx = sign_extend_u64_to_u128(r_X[i]);
+                    u128 ry = sign_extend_u64_to_u128(r_Y[i]);
+                    u128 rz = sign_extend_u64_to_u128(r_Z[i]);
+                    r_C[i] = rx * ry + rz;
                 }
 
                 send_sh_ashare(r_X);
@@ -134,11 +144,16 @@ namespace shark {
                 shark::span<u128> Z_share_128(n);
 
                 // Z = r_C + X * Y - r_X * Y - X * r_Y (r_C = r_X * r_Y + r_Z in gen)
-                // Use u128 for intermediate computation to avoid overflow
+                // CRITICAL: Use sign extension when converting u64 to u128!
                 #pragma omp parallel for
                 for (u64 i = 0; i < n; i++)
                 {
-                    Z_share_128[i] = r_C[i] + ((u128)X[i] * u128(party) - (u128)r_X[i]) * (u128)Y[i] - (u128)r_Y[i] * (u128)X[i];
+                    u128 x = sign_extend_u64_to_u128(X[i]);
+                    u128 y = sign_extend_u64_to_u128(Y[i]);
+                    u128 rx = sign_extend_u64_to_u128(r_X[i]);
+                    u128 ry = sign_extend_u64_to_u128(r_Y[i]);
+
+                    Z_share_128[i] = r_C[i] + (x * u128(party) - rx) * y - ry * x;
                 }
 
                 // Reconstruct in u128 to preserve high bits, then apply arithmetic right shift
