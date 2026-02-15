@@ -651,17 +651,14 @@ int main(int argc, char **argv) {
     shark::utils::stop_timer("crown_calculation");
     shark::utils::stop_timer("End_to_end_time");
 
-    // ==================== Output Debug Records ====================
-    if (enable_debug) {
-        for (auto& record : debug_records) {
-            // 将 vector 转换为 span 进行 output::call
-            shark::span<u64> data_span(record.data.data(), record.data.size());
-            output::call(data_span);
-        }
-    }
-
-    output::call(final_LB);
-    output::call(final_UB);
+    // ==================== Output Results ====================
+    // NOTE: matmul_ars and mul_ars protocols already reconstruct internally,
+    // so all intermediate values and final results are already plaintext on evaluator side.
+    // We should NOT call output::call on these values, as it would incorrectly
+    // subtract the dealer's random values from the already-reconstructed plaintext.
+    //
+    // For debug_records: evaluator has plaintext, dealer has random garbage - no output::call needed
+    // For final_LB/UB: evaluator has plaintext - no output::call needed
 
     if (party != DEALER) {
         // 打印 Debug 信息
