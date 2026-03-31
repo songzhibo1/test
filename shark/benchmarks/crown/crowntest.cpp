@@ -42,7 +42,7 @@ struct DebugRecord {
 };
 
 std::vector<DebugRecord> debug_records;
-bool enable_debug = false;  // 设置为 true 开启调试输出
+bool enable_debug = false;
 
 void record_value(const std::string& name, shark::span<u64>& data, int layer_idx = -1) {
     if (enable_debug) {
@@ -85,6 +85,7 @@ u64 float_to_fixed(double val) {
     return (u64)(int64_t)(val * SCALAR_ONE);
 }
 
+// 优化：使用 add::call 进行向量减法
 shark::span<u64> secure_sub(shark::span<u64>& A, shark::span<u64>& B) {
     shark::span<u64> B_neg(B.size());
     for(size_t i = 0; i < B.size(); ++i) B_neg[i] = -B[i];
@@ -108,25 +109,20 @@ shark::span<u64> broadcast_scalar(shark::span<u64>& scalar_share, int size) {
 
 // ==================== 改进的 Reciprocal (牛顿迭代) ====================
 
-// 牛顿迭代: x_{n+1} = x_n * (2 - a * x_n)
 shark::span<u64> newton_refine_reciprocal(shark::span<u64>& a, shark::span<u64>& x_n, shark::span<u64>& two_share) {
     size_t size = a.size();
 
-    // ax = a * x_n
     auto ax = mul::call(a, x_n);
     ax = ars::call(ax, f);
 
-    // diff = 2 - ax
     shark::span<u64> two_vec(size);
     for (size_t i = 0; i < size; ++i) two_vec[i] = two_share[0];
     auto diff = secure_sub(two_vec, ax);
 
-    // x_{n+1} = x_n * diff
     auto x_next = mul::call(x_n, diff);
     return ars::call(x_next, f);
 }
 
-// 改进的倒数: 原始 reciprocal + 牛顿迭代
 shark::span<u64> improved_reciprocal(shark::span<u64>& a, shark::span<u64>& two_share, int iterations = 1) {
     auto x = reciprocal::call(a, f);
     for (int i = 0; i < iterations; ++i) {
@@ -135,7 +131,7 @@ shark::span<u64> improved_reciprocal(shark::span<u64>& a, shark::span<u64>& two_
     return x;
 }
 
-// ==================== Alpha 计算 (使用改进的 reciprocal) ====================
+// ==================== Alpha 计算 ====================
 
 shark::span<u64> secure_clamp_upper_1(shark::span<u64>& x, shark::span<u64>& one_share) {
     size_t size = x.size();
@@ -151,91 +147,88 @@ shark::span<u64> compute_alpha_secure(shark::span<u64>& U, shark::span<u64>& L,
                                        shark::span<u64>& two_share) {
     size_t size = U.size();
 
-    // num = ReLU(U)
     auto num = relu::call(U);
 
-    // term2 = ReLU(-L)
     shark::span<u64> L_neg(size);
     for(size_t i = 0; i < size; ++i) L_neg[i] = -L[i];
     auto term2 = relu::call(L_neg);
 
-    // den = num + term2 + epsilon
     auto den = add::call(num, term2);
     auto eps_vec = broadcast_scalar(epsilon_share, size);
     den = add::call(den, eps_vec);
 
-    // 使用改进的 reciprocal (1次牛顿迭代)
     auto den_inv = improved_reciprocal(den, two_share, 3);
 
-    // alpha = num * den_inv
     auto alpha = mul::call(num, den_inv);
     alpha = ars::call(alpha, f);
 
-    // Clamp to [0, 1]
     return secure_clamp_upper_1(alpha, one_share);
 }
 
-// ==================== 其他工具函数 ====================
+// ==================== 优化的工具函数 ====================
 
+// 优化: 向量化的矩阵-alpha 缩放
+// W: rows x cols 矩阵, alpha: cols 向量
+// 结果: result[r][c] = W[r][c] * alpha[c]
 shark::span<u64> scale_matrix_by_alpha(shark::span<u64>& W, shark::span<u64>& alpha, int rows, int cols) {
-    shark::span<u64> result(rows * cols);
+    // 扩展 alpha 到与 W 相同的大小: 每行都是 alpha
+    shark::span<u64> alpha_expanded(rows * cols);
     for(int r = 0; r < rows; ++r) {
         for(int c = 0; c < cols; ++c) {
-            shark::span<u64> w_elem(1), a_elem(1);
-            w_elem[0] = W[r * cols + c];
-            a_elem[0] = alpha[c];
-            auto prod = mul::call(w_elem, a_elem);
-            prod = ars::call(prod, f);
-            result[r * cols + c] = prod[0];
+            alpha_expanded[r * cols + c] = alpha[c];
         }
     }
-    return result;
+
+    // 单次向量化乘法
+    auto result = mul::call(W, alpha_expanded);
+    return ars::call(result, f);
 }
 
+// 优化: 向量化点积
+// 单次 mul::call，然后本地求和
 shark::span<u64> dot_product(shark::span<u64>& A, shark::span<u64>& B, int size) {
+    // 向量化乘法
+    auto prod = mul::call(A, B);
+    prod = ars::call(prod, f);
+
+    // 本地求和 (秘密份额的加法可以本地完成)
     shark::span<u64> result(1);
     result[0] = 0;
     for(int i = 0; i < size; ++i) {
-        shark::span<u64> a_elem(1), b_elem(1);
-        a_elem[0] = A[i];
-        b_elem[0] = B[i];
-        auto prod = mul::call(a_elem, b_elem);
-        prod = ars::call(prod, f);
-        result = add::call(result, prod);
+        result[0] += prod[i];
     }
     return result;
 }
 
+// 优化: 向量化绝对值求和
 shark::span<u64> sum_abs(shark::span<u64>& A, int size) {
     auto A_abs = secure_abs(A);
+
+    // 本地求和
     shark::span<u64> result(1);
     result[0] = 0;
     for(int i = 0; i < size; ++i) {
-        shark::span<u64> elem(1);
-        elem[0] = A_abs[i];
-        result = add::call(result, elem);
+        result[0] += A_abs[i];
     }
     return result;
 }
 
+// 优化: 本地行求和 (不需要协议调用)
 shark::span<u64> compute_row_sum_manual(shark::span<u64>& A_abs, int rows, int cols) {
     shark::span<u64> result(rows);
     for (int row = 0; row < rows; ++row) {
-        shark::span<u64> sum(1);
-        sum[0] = 0;
+        u64 sum = 0;
         for (int col = 0; col < cols; ++col) {
-            shark::span<u64> abs_elem(1);
-            abs_elem[0] = A_abs[row * cols + col];
-            sum = add::call(sum, abs_elem);
+            sum += A_abs[row * cols + col];
         }
-        result[row] = sum[0];
+        result[row] = sum;
     }
     return result;
 }
 
-// ==================== Corrections ====================
-// ==================== Corrections ====================
+// ==================== 优化的 Corrections ====================
 
+// 优化: 向量化 lb correction (向量版本)
 shark::span<u64> compute_lb_correction_vec(shark::span<u64>& A, shark::span<u64>& LB, int size) {
     shark::span<u64> A_neg(size);
     for(int i = 0; i < size; ++i) A_neg[i] = -A[i];
@@ -245,194 +238,111 @@ shark::span<u64> compute_lb_correction_vec(shark::span<u64>& A, shark::span<u64>
     for(int i = 0; i < size; ++i) LB_neg[i] = -LB[i];
     auto relu_neg_LB = relu::call(LB_neg);
 
+    // 向量化乘法
     auto correction_vec = mul::call(relu_neg_A, relu_neg_LB);
     correction_vec = ars::call(correction_vec, f);
 
+    // 本地求和
     shark::span<u64> result(1);
     result[0] = 0;
     for(int i = 0; i < size; ++i) {
-        shark::span<u64> elem(1);
-        elem[0] = correction_vec[i];
-        result = add::call(result, elem);
+        result[0] += correction_vec[i];
     }
     return result;
 }
 
+// 优化: 向量化 ub correction (向量版本)
 shark::span<u64> compute_ub_correction_vec(shark::span<u64>& A, shark::span<u64>& LB, int size) {
     auto relu_A = relu::call(A);
+
     shark::span<u64> LB_neg(size);
     for(int i = 0; i < size; ++i) LB_neg[i] = -LB[i];
     auto relu_neg_LB = relu::call(LB_neg);
+
+    // 向量化乘法
     auto correction_vec = mul::call(relu_A, relu_neg_LB);
     correction_vec = ars::call(correction_vec, f);
+
+    // 本地求和
     shark::span<u64> result(1);
     result[0] = 0;
     for(int i = 0; i < size; ++i) {
-        shark::span<u64> elem(1);
-        elem[0] = correction_vec[i];
-        result = add::call(result, elem);
+        result[0] += correction_vec[i];
     }
     return result;
 }
 
+// 优化: 向量化 lb correction (矩阵版本)
+// A: rows x cols, LB: cols
+// 对每行分别计算 correction
 shark::span<u64> compute_lb_correction_matrix(shark::span<u64>& A, shark::span<u64>& LB, int rows, int cols) {
-    shark::span<u64> corrections(rows);
+    // 预计算 relu(-LB)
     shark::span<u64> LB_neg(cols);
     for(int i = 0; i < cols; ++i) LB_neg[i] = -LB[i];
     auto relu_neg_LB = relu::call(LB_neg);
+
+    // 计算 -A 并做 relu (整个矩阵一次)
+    shark::span<u64> A_neg(rows * cols);
+    for(int i = 0; i < rows * cols; ++i) A_neg[i] = -A[i];
+    auto relu_neg_A = relu::call(A_neg);
+
+    // 扩展 relu_neg_LB 到矩阵大小
+    shark::span<u64> relu_neg_LB_expanded(rows * cols);
     for(int r = 0; r < rows; ++r) {
-        shark::span<u64> A_row(cols);
-        for(int c = 0; c < cols; ++c) A_row[c] = A[r * cols + c];
-        shark::span<u64> A_row_neg(cols);
-        for(int c = 0; c < cols; ++c) A_row_neg[c] = -A_row[c];
-        auto relu_neg_A_row = relu::call(A_row_neg);
-        auto correction_vec = mul::call(relu_neg_A_row, relu_neg_LB);
-        correction_vec = ars::call(correction_vec, f);
-        shark::span<u64> sum(1);
-        sum[0] = 0;
         for(int c = 0; c < cols; ++c) {
-            shark::span<u64> elem(1);
-            elem[0] = correction_vec[c];
-            sum = add::call(sum, elem);
+            relu_neg_LB_expanded[r * cols + c] = relu_neg_LB[c];
         }
-        corrections[r] = sum[0];
+    }
+
+    // 单次向量化乘法
+    auto correction_matrix = mul::call(relu_neg_A, relu_neg_LB_expanded);
+    correction_matrix = ars::call(correction_matrix, f);
+
+    // 本地按行求和
+    shark::span<u64> corrections(rows);
+    for(int r = 0; r < rows; ++r) {
+        u64 sum = 0;
+        for(int c = 0; c < cols; ++c) {
+            sum += correction_matrix[r * cols + c];
+        }
+        corrections[r] = sum;
     }
     return corrections;
 }
 
+// 优化: 向量化 ub correction (矩阵版本)
 shark::span<u64> compute_ub_correction_matrix(shark::span<u64>& A, shark::span<u64>& LB, int rows, int cols) {
-    shark::span<u64> corrections(rows);
+    // 预计算 relu(-LB)
     shark::span<u64> LB_neg(cols);
     for(int i = 0; i < cols; ++i) LB_neg[i] = -LB[i];
     auto relu_neg_LB = relu::call(LB_neg);
+
+    // 计算 relu(A) (整个矩阵一次)
+    auto relu_A = relu::call(A);
+
+    // 扩展 relu_neg_LB 到矩阵大小
+    shark::span<u64> relu_neg_LB_expanded(rows * cols);
     for(int r = 0; r < rows; ++r) {
-        shark::span<u64> A_row(cols);
-        for(int c = 0; c < cols; ++c) A_row[c] = A[r * cols + c];
-        auto relu_A_row = relu::call(A_row);
-        auto correction_vec = mul::call(relu_A_row, relu_neg_LB);
-        correction_vec = ars::call(correction_vec, f);
-        shark::span<u64> sum(1);
-        sum[0] = 0;
         for(int c = 0; c < cols; ++c) {
-            shark::span<u64> elem(1);
-            elem[0] = correction_vec[c];
-            sum = add::call(sum, elem);
+            relu_neg_LB_expanded[r * cols + c] = relu_neg_LB[c];
         }
-        corrections[r] = sum[0];
+    }
+
+    // 单次向量化乘法
+    auto correction_matrix = mul::call(relu_A, relu_neg_LB_expanded);
+    correction_matrix = ars::call(correction_matrix, f);
+
+    // 本地按行求和
+    shark::span<u64> corrections(rows);
+    for(int r = 0; r < rows; ++r) {
+        u64 sum = 0;
+        for(int c = 0; c < cols; ++c) {
+            sum += correction_matrix[r * cols + c];
+        }
+        corrections[r] = sum;
     }
     return corrections;
 }
-
-
-//shark::span<u64> compute_lb_correction_vec(shark::span<u64>& A, shark::span<u64>& LB, int size) {
-//    shark::span<u64> A_neg(size);
-//    for(int i = 0; i < size; ++i) A_neg[i] = -A[i];
-//    auto relu_neg_A = relu::call(A_neg);
-//
-//    shark::span<u64> LB_neg(size);
-//    for(int i = 0; i < size; ++i) LB_neg[i] = -LB[i];
-//    auto relu_neg_LB = relu::call(LB_neg);
-//
-//    // Q26 -> Q13
-//    auto relu_neg_LB_q13 = ars::call(relu_neg_LB, 13);
-//    auto correction_vec_q39 = mul::call(relu_neg_A, relu_neg_LB_q13);
-//    auto correction_vec = ars::call(correction_vec_q39, 13);
-//
-//    shark::span<u64> result(1);
-//    result[0] = 0;
-//    for(int i = 0; i < size; ++i) {
-//        shark::span<u64> elem(1);
-//        elem[0] = correction_vec[i];
-//        result = add::call(result, elem);
-//    }
-//    return result;
-//}
-//
-//shark::span<u64> compute_ub_correction_matrix(shark::span<u64>& A, shark::span<u64>& LB, int rows, int cols) {
-//    shark::span<u64> corrections(rows);
-//    shark::span<u64> LB_neg(cols);
-//    for(int i = 0; i < cols; ++i) LB_neg[i] = -LB[i];
-//    auto relu_neg_LB = relu::call(LB_neg);
-//
-//    // --- 修改点：将 LB 从 Q26 缩放到 Q13 ---
-//    auto relu_neg_LB_q13 = ars::call(relu_neg_LB, 13);
-//
-//    for(int r = 0; r < rows; ++r) {
-//        shark::span<u64> A_row(cols);
-//        for(int c = 0; c < cols; ++c) A_row[c] = A[r * cols + c];
-//        auto relu_A_row = relu::call(A_row);
-//
-//        // 乘法：Q26 * Q13 = Q39
-//        auto correction_vec_q39 = mul::call(relu_A_row, relu_neg_LB_q13);
-//
-//        // --- 修改点：将 Q39 缩放回 Q26 ---
-//        auto correction_vec = ars::call(correction_vec_q39, 13);
-//
-//        shark::span<u64> sum(1);
-//        sum[0] = 0;
-//        for(int c = 0; c < cols; ++c) {
-//            shark::span<u64> elem(1);
-//            elem[0] = correction_vec[c];
-//            sum = add::call(sum, elem);
-//        }
-//        corrections[r] = sum[0];
-//    }
-//    return corrections;
-//}
-//
-//shark::span<u64> compute_ub_correction_vec(shark::span<u64>& A, shark::span<u64>& LB, int size) {
-//    auto relu_A = relu::call(A);
-//    shark::span<u64> LB_neg(size);
-//    for(int i = 0; i < size; ++i) LB_neg[i] = -LB[i];
-//    auto relu_neg_LB = relu::call(LB_neg);
-//
-//    // Q26 -> Q13
-//    auto relu_neg_LB_q13 = ars::call(relu_neg_LB, 13);
-//    auto correction_vec_q39 = mul::call(relu_A, relu_neg_LB_q13);
-//    auto correction_vec = ars::call(correction_vec_q39, 13);
-//
-//    shark::span<u64> result(1);
-//    result[0] = 0;
-//    for(int i = 0; i < size; ++i) {
-//        shark::span<u64> elem(1);
-//        elem[0] = correction_vec[i];
-//        result = add::call(result, elem);
-//    }
-//    return result;
-//}
-//
-//shark::span<u64> compute_lb_correction_matrix(shark::span<u64>& A, shark::span<u64>& LB, int rows, int cols) {
-//    shark::span<u64> corrections(rows);
-//    shark::span<u64> LB_neg(cols);
-//    for(int i = 0; i < cols; ++i) LB_neg[i] = -LB[i];
-//    auto relu_neg_LB = relu::call(LB_neg);
-//
-//    // Q26 -> Q13
-//    auto relu_neg_LB_q13 = ars::call(relu_neg_LB, 13);
-//
-//    for(int r = 0; r < rows; ++r) {
-//        shark::span<u64> A_row(cols);
-//        for(int c = 0; c < cols; ++c) A_row[c] = A[r * cols + c];
-//        shark::span<u64> A_row_neg(cols);
-//        for(int c = 0; c < cols; ++c) A_row_neg[c] = -A_row[c];
-//        auto relu_neg_A_row = relu::call(A_row_neg);
-//
-//        // Q26 * Q13 = Q39 -> Q26
-//        auto correction_vec_q39 = mul::call(relu_neg_A_row, relu_neg_LB_q13);
-//        auto correction_vec = ars::call(correction_vec_q39, 13);
-//
-//        shark::span<u64> sum(1);
-//        sum[0] = 0;
-//        for(int c = 0; c < cols; ++c) {
-//            shark::span<u64> elem(1);
-//            elem[0] = correction_vec[c];
-//            sum = add::call(sum, elem);
-//        }
-//        corrections[r] = sum[0];
-//    }
-//    return corrections;
-//}
-
 
 // ==================== CROWN Core ====================
 
@@ -525,14 +435,11 @@ public:
         int out_dim = curr_layer.output_dim;
         int in_dim = curr_layer.input_dim;
 
-        // 1. 初始化 A 为当前层权重 (未乘 Alpha)
         auto A_prop = curr_layer.W;
 
-        // 2. 初始化 Constants (当前层 Bias)
         shark::span<u64> constants(out_dim);
         for(int i = 0; i < out_dim; ++i) constants[i] = curr_layer.b[i];
 
-        // 3. 初始化 Corrections (修正项累加器)
         shark::span<u64> lb_corr_total(out_dim);
         shark::span<u64> ub_corr_total(out_dim);
         for(int i = 0; i < out_dim; ++i) {
@@ -540,34 +447,25 @@ public:
             ub_corr_total[i] = 0;
         }
 
-        // 4. 反向传播循环 (回溯到输入层)
         for(int i = layer_idx - 1; i >= 0; --i) {
-            // 在进入 Layer i 之前，A_prop 是 "从输出到 Layer i 输出" 的矩阵。
-            // Layer i 的输出 = ReLU(Layer i Pre-activation)
-
-            // 4a. 穿过 ReLU: A_prop = A_prop * alpha_i
-            // [CORRECTED]: 先乘 Alpha，再算 Correction
-            // scale_matrix_by_alpha 是按列乘 (A 的每一列乘 alpha 的对应元素)
+            // 优化: 使用向量化的 scale_matrix_by_alpha
             A_prop = scale_matrix_by_alpha(A_prop, layer_bounds[i].alpha, out_dim, layers[i].output_dim);
 
             if (i == layer_idx - 1) {
                  record_value("Layer" + std::to_string(layer_idx) + "_A_matrix", A_prop, layer_idx);
             }
 
-            // 4b. 累加 Layer i 的 Corrections (使用已经乘过 Alpha 的 A_prop)
+            // 优化: 使用向量化的 correction 计算
             auto lb_c = compute_lb_correction_matrix(A_prop, layer_bounds[i].LB, out_dim, layers[i].output_dim);
             auto ub_c = compute_ub_correction_matrix(A_prop, layer_bounds[i].LB, out_dim, layers[i].output_dim);
 
             lb_corr_total = add::call(lb_corr_total, lb_c);
             ub_corr_total = add::call(ub_corr_total, ub_c);
 
-            // 4c. 累加 Layer i 的 Bias: Constants += A_prop * b_i
             auto Ab = matmul::call(out_dim, layers[i].output_dim, 1, A_prop, layers[i].b);
             Ab = ars::call(Ab, f);
             constants = add::call(constants, Ab);
 
-            // 4d. 穿过 Linear: A_prop = A_prop * W_i
-            // 准备进入下一层 (i-1)
             A_prop = matmul::call(out_dim, layers[i].output_dim, layers[i].input_dim, A_prop, layers[i].W);
             A_prop = ars::call(A_prop, f);
         }
@@ -576,12 +474,10 @@ public:
         record_value("Layer" + std::to_string(layer_idx) + "_lb_corr", lb_corr_total, layer_idx);
         record_value("Layer" + std::to_string(layer_idx) + "_ub_corr", ub_corr_total, layer_idx);
 
-        // 5. 计算 Input 产生的边界: A_prop * x0
         auto Ax0 = matmul::call(out_dim, input_dim, 1, A_prop, x0);
         Ax0 = ars::call(Ax0, f);
         record_value("Layer" + std::to_string(layer_idx) + "_Ax0", Ax0, layer_idx);
 
-        // 6. 计算 Radius
         auto A_abs = secure_abs(A_prop);
         auto dualnorm = compute_row_sum_manual(A_abs, out_dim, input_dim);
         record_value("Layer" + std::to_string(layer_idx) + "_dualnorm", dualnorm, layer_idx);
@@ -592,7 +488,6 @@ public:
         radius = relu::call(radius);
         record_value("Layer" + std::to_string(layer_idx) + "_radius", radius, layer_idx);
 
-        // 7. 合并
         auto base = add::call(Ax0, constants);
 
         bounds.UB = add::call(base, ub_corr_total);
@@ -603,7 +498,6 @@ public:
         bounds.LB = secure_sub(bounds.LB, radius);
         record_value("Layer" + std::to_string(layer_idx) + "_LB", bounds.LB, layer_idx);
 
-        // 8. Alpha
         bounds.alpha = compute_alpha_secure(bounds.UB, bounds.LB, epsilon_share, one_share, two_share);
         record_value("Layer" + std::to_string(layer_idx) + "_alpha", bounds.alpha, layer_idx);
 
@@ -631,70 +525,42 @@ public:
         int out_dim = 1;
         int in_dim = last_layer.input_dim;
 
-        // 1. 计算 W_diff (1 x in_dim)
-        shark::span<u64> W_diff(in_dim);
-        for(int i = 0; i < in_dim; ++i) {
-            shark::span<u64> sum(1);
-            sum[0] = 0;
-            for(int j = 0; j < last_layer.output_dim; ++j) {
-                shark::span<u64> w_elem(1), d_elem(1);
-                w_elem[0] = last_layer.W[j * in_dim + i];
-                d_elem[0] = diff_vec[j];
-                auto prod = mul::call(w_elem, d_elem);
-                prod = ars::call(prod, f);
-                sum = add::call(sum, prod);
-            }
-            W_diff[i] = sum[0];
-        }
+        // 优化: 使用 matmul 计算 W_diff = W^T * diff_vec
+        // W: output_dim x in_dim, diff_vec: output_dim
+        // W_diff[i] = sum_j(W[j][i] * diff_vec[j]) = (W^T * diff_vec)[i]
+        // 即 W_diff = matmul(in_dim, output_dim, 1, W^T, diff_vec)
+        // 但 W 是行主序存储，W[j][i] = W[j * in_dim + i]
+        // 我们需要计算 W_diff[i] = sum_j W[j * in_dim + i] * diff_vec[j]
+        // 这等价于 matmul(1, output_dim, in_dim, diff_vec, W)，结果是 1 x in_dim
+        auto W_diff = matmul::call(1, last_layer.output_dim, in_dim, diff_vec, last_layer.W);
+        W_diff = ars::call(W_diff, f);
         record_value("Final_W_diff", W_diff, -1);
 
-        // 2. 计算 b_diff (1)
-        shark::span<u64> b_diff(1);
-        b_diff[0] = 0;
-        for(int j = 0; j < last_layer.output_dim; ++j) {
-            shark::span<u64> b_elem(1), d_elem(1);
-            b_elem[0] = last_layer.b[j];
-            d_elem[0] = diff_vec[j];
-            auto prod = mul::call(b_elem, d_elem);
-            prod = ars::call(prod, f);
-            b_diff = add::call(b_diff, prod);
-        }
+        // 优化: 向量化计算 b_diff
+        auto b_diff = dot_product(last_layer.b, diff_vec, last_layer.output_dim);
         record_value("Final_b_diff", b_diff, -1);
 
-        // 初始化累加器
         auto constants = b_diff;
         shark::span<u64> lb_corr_total(1); lb_corr_total[0] = 0;
         shark::span<u64> ub_corr_total(1); ub_corr_total[0] = 0;
 
-        // 3. 准备反向传播: A_prop = W_diff (向量)
         auto A_prop = W_diff;
 
-        // 4. 反向传播循环 (从 last_idx - 1 开始往前)
         for(int i = last_idx - 1; i >= 0; --i) {
-
-            // 4a. 更新 A_prop 穿过 ReLU: A_prop = A_prop * alpha_i
-            // [CORRECTED]: 先乘 Alpha
-            shark::span<u64> A_scaled(layers[i].output_dim);
-            for(int k=0; k<layers[i].output_dim; ++k) {
-                shark::span<u64> elem(1), alpha(1);
-                elem[0] = A_prop[k];
-                alpha[0] = layer_bounds[i].alpha[k];
-                auto prod = mul::call(elem, alpha);
-                prod = ars::call(prod, f);
-                A_scaled[k] = prod[0];
-            }
-            A_prop = A_scaled;
+            // 优化: 向量化的 alpha 缩放
+            // A_prop: in_dim 向量, alpha: output_dim 向量
+            // 需要 A_prop[k] *= alpha[k]
+            auto A_scaled = mul::call(A_prop, layer_bounds[i].alpha);
+            A_prop = ars::call(A_scaled, f);
 
             if (i == last_idx - 1) {
                 record_value("Final_A_final", A_prop, -1);
 
-                // Debug Initial Constants based on First Alpha Scale
                 auto init_c = dot_product(A_prop, layers[i].b, layers[i].output_dim);
                 init_c = add::call(init_c, b_diff);
                 record_value("Final_constants_initial", init_c, -1);
             }
 
-            // 4b. 累加 Layer i 的 Corrections (使用乘过 Alpha 的 A_prop)
             auto lb_c = compute_lb_correction_vec(A_prop, layer_bounds[i].LB, layers[i].output_dim);
             auto ub_c = compute_ub_correction_vec(A_prop, layer_bounds[i].LB, layers[i].output_dim);
 
@@ -703,14 +569,13 @@ public:
                 record_value("Final_ub_corr_layer1", ub_c, -1);
             }
 
-            lb_corr_total = add::call(lb_corr_total, lb_c);
-            ub_corr_total = add::call(ub_corr_total, ub_c);
+            // 本地加法
+            lb_corr_total[0] += lb_c[0];
+            ub_corr_total[0] += ub_c[0];
 
-            // 4c. 累加 Layer i 的 Bias: Constants += A_prop * b_i
             auto Ab = dot_product(A_prop, layers[i].b, layers[i].output_dim);
-            constants = add::call(constants, Ab);
+            constants[0] += Ab[0];
 
-            // 4d. 更新 A_prop 穿过 Linear: A_prop = A_prop * W_i
             auto A_next = matmul::call(1, layers[i].output_dim, layers[i].input_dim, A_prop, layers[i].W);
             A_next = ars::call(A_next, f);
 
@@ -744,26 +609,32 @@ public:
 };
 
 // ==================== Main ====================
-// ... (之前的 Header, Debug System, Loader, Utils 保持不变) ...
-
-// ==================== Main ====================
 
 int main(int argc, char **argv) {
     init::from_args(argc, argv);
 
-    // --- 1. 默认配置 ---
-    std::string model_name = "eran_cifar_5layer_relu_100_best";
-    int input_dim = 3072;
-    int output_dim = 10;
-    int num_layers = 5;
-    int hidden_dim = 100;
-    int true_label = 1;
-    int target_label = 4;
-    float eps = 0.0002;
-    int image_id = 6;  // 新增：图像编号，默认为0
-    std::string custom_input_file = "";  // 自定义输入文件路径（可选）
+//    std::string model_name = "eran_cifar_5layer_relu_100_best";
+//    int input_dim = 3072;
+//    int output_dim = 10;
+//    int num_layers = 5;
+//    int hidden_dim = 100;
+//    int true_label = 1;
+//    int target_label = 4;
+//    float eps = 0.0002;
+//    int image_id = 6;
+//    std::string custom_input_file = "";
 
-    // --- 2. 解析命令行参数 ---
+    std::string model_name = "vnncomp_mnist_7layer_relu_256_best";
+    int input_dim = 784;
+    int output_dim = 10;
+    int num_layers = 7;
+    int hidden_dim = 256;
+    int true_label = 1;
+    int target_label = 5;
+    float eps = 0.015;
+    int image_id = 2;
+    std::string custom_input_file = "";
+
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg.find("--model=") == 0) {
@@ -801,9 +672,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    // --- 3. 动态构建 layer_dims ---
-    // 格式: [input_dim, hidden_dim, hidden_dim, ..., output_dim]
-    // 例如 3层网络: [784, 256, 256, 10]
     std::vector<int> layer_dims;
     layer_dims.push_back(input_dim);
     for (int i = 0; i < num_layers - 1; ++i) {
@@ -811,11 +679,9 @@ int main(int argc, char **argv) {
     }
     layer_dims.push_back(output_dim);
 
-    // 动态构建路径
     std::string base_path = "shark_crown_ml/crown_mpc_data/" + model_name;
     std::string weights_file = base_path + "/weights/weights.dat";
 
-    // 输入文件路径：优先使用自定义路径，否则使用 image_id 构建
     std::string input_file;
     if (!custom_input_file.empty()) {
         input_file = custom_input_file;
@@ -840,7 +706,10 @@ int main(int argc, char **argv) {
         std::cout << "********************************************" << std::endl;
     }
 
-    // --- 4. 预加载与静态共享 ---
+    // ==================== Input Phase 开始 ====================
+    shark::utils::start_timer("End_to_end_time");  // 端到端时间包含 input
+    shark::utils::start_timer("input");
+
     std::vector<shark::span<u64>> weights(num_layers);
     std::vector<shark::span<u64>> biases(num_layers);
     for (int i = 0; i < num_layers; ++i) {
@@ -885,10 +754,10 @@ int main(int argc, char **argv) {
     input::call(diff_vec, CLIENT);
     input::call(ones_input, CLIENT);
 
-    if (party != DEALER) peer->sync();
+    shark::utils::stop_timer("input");
+    // ==================== Input Phase 结束 ====================
 
-    // --- 5. CROWN 计算 ---
-    shark::utils::start_timer("End_to_end_time");
+    if (party != DEALER) peer->sync();
     shark::utils::start_timer("crown_calculation");
 
     CROWNComputer crown(input_dim);
@@ -902,7 +771,6 @@ int main(int argc, char **argv) {
     shark::utils::stop_timer("crown_calculation");
     shark::utils::stop_timer("End_to_end_time");
 
-    // 输出调试信息
     if (enable_debug) {
         for (auto& record : debug_records) {
             output::call(record.data);
@@ -930,7 +798,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    // --- 6. 输出结果 ---
     if (party != DEALER) {
         std::cout << "\n============================================" << std::endl;
         std::cout << "MODEL: " << model_name << std::endl;
@@ -947,197 +814,3 @@ int main(int argc, char **argv) {
     finalize::call();
     return 0;
 }
-
-// ==================== Main ====================
-
-//int main(int argc, char **argv) {
-//    init::from_args(argc, argv);
-//
-//    // --- 1. 默认配置 ---
-////    std::string model_name = "vnncomp_mnist_7layer_relu_256_best";
-////    int input_dim = 784;
-////    int output_dim = 10;
-////    int num_layers = 7;
-////    int hidden_dim = 256;
-////    int true_label = 7;
-////    int target_label = 3;
-////    float eps = 0.2;
-//
-//    std::string model_name = "eran_cifar_5layer_relu_100_best";
-//    int input_dim = 3072;
-//    int output_dim = 10;
-//    int num_layers = 5;
-//    int hidden_dim = 100;
-//    int true_label = 3;
-//    int target_label = 6;
-//    float eps = 0.0002;
-//
-//
-//    // --- 2. 解析命令行参数 ---
-//    for (int i = 1; i < argc; ++i) {
-//        std::string arg = argv[i];
-//        if (arg.find("--model=") == 0) {
-//            model_name = arg.substr(8);
-//        }
-//        else if (arg.find("--num_layers=") == 0) {
-//            num_layers = std::stoi(arg.substr(13));
-//        }
-//        else if (arg.find("--hidden_dim=") == 0) {
-//            hidden_dim = std::stoi(arg.substr(13));
-//        }
-//        else if (arg.find("--input_dim=") == 0) {
-//            input_dim = std::stoi(arg.substr(12));
-//        }
-//        else if (arg.find("--output_dim=") == 0) {
-//            output_dim = std::stoi(arg.substr(13));
-//        }
-//        else if (arg.find("--eps=") == 0) {
-//            eps = std::stof(arg.substr(6));
-//        }
-//        else if (arg.find("--true_label=") == 0) {
-//            true_label = std::stoi(arg.substr(13));
-//        }
-//        else if (arg.find("--target_label=") == 0) {
-//            target_label = std::stoi(arg.substr(15));
-//        }
-//        else if (arg == "--debug") {
-//            enable_debug = true;
-//        }
-//    }
-//
-//    // --- 3. 动态构建 layer_dims ---
-//    // 格式: [input_dim, hidden_dim, hidden_dim, ..., output_dim]
-//    // 例如 3层网络: [784, 256, 256, 10]
-//    std::vector<int> layer_dims;
-//    layer_dims.push_back(input_dim);
-//    for (int i = 0; i < num_layers - 1; ++i) {
-//        layer_dims.push_back(hidden_dim);
-//    }
-//    layer_dims.push_back(output_dim);
-//
-//    // 动态构建路径
-//    std::string base_path = "shark_crown_ml/crown_mpc_data/" + model_name;
-//    std::string weights_file = base_path + "/weights/weights.dat";
-//    std::string input_file = base_path + "/images/0.bin";
-//
-//    if (party != DEALER) {
-//        std::cout << "\n********************************************" << std::endl;
-//        std::cout << "  MODEL: " << model_name << std::endl;
-//        std::cout << "  Layers: " << num_layers << ", Hidden: " << hidden_dim << std::endl;
-//        std::cout << "  Layer dims: [";
-//        for (size_t i = 0; i < layer_dims.size(); ++i) {
-//            std::cout << layer_dims[i];
-//            if (i < layer_dims.size() - 1) std::cout << ", ";
-//        }
-//        std::cout << "]" << std::endl;
-//        std::cout << "  EPS: " << eps << std::endl;
-//        std::cout << "  True label: " << true_label << ", Target: " << target_label << std::endl;
-//        std::cout << "********************************************" << std::endl;
-//    }
-//
-//    // --- 4. 预加载与静态共享 ---
-//    std::vector<shark::span<u64>> weights(num_layers);
-//    std::vector<shark::span<u64>> biases(num_layers);
-//    for (int i = 0; i < num_layers; ++i) {
-//        weights[i] = shark::span<u64>(layer_dims[i + 1] * layer_dims[i]);
-//        biases[i] = shark::span<u64>(layer_dims[i + 1]);
-//    }
-//
-//    if (party == SERVER) {
-//        Loader weights_loader(weights_file);
-//        for (int i = 0; i < num_layers; ++i) {
-//            weights_loader.load(weights[i], f);
-//            weights_loader.load(biases[i], f);
-//        }
-//    }
-//    for (int i = 0; i < num_layers; ++i) {
-//        input::call(weights[i], SERVER);
-//        input::call(biases[i], SERVER);
-//    }
-//
-//    shark::span<u64> epsilon_share(1), one_share(1), two_share(1);
-//    shark::span<u64> diff_vec(output_dim), x0(input_dim), ones_input(input_dim);
-//    shark::span<u64> eps_share(1);
-//
-//    if (party == CLIENT) {
-//        Loader input_loader(input_file);
-//        input_loader.load(x0, f);
-//        epsilon_share[0] = float_to_fixed(0.000001);
-//        one_share[0] = SCALAR_ONE;
-//        two_share[0] = float_to_fixed(2.0);
-//        eps_share[0] = float_to_fixed(eps);
-//        for (int i = 0; i < input_dim; ++i) ones_input[i] = SCALAR_ONE;
-//        for (int i = 0; i < output_dim; ++i) diff_vec[i] = 0;
-//        diff_vec[true_label] = float_to_fixed(1.0);
-//        diff_vec[target_label] = float_to_fixed(-1.0);
-//    }
-//
-//    input::call(x0, CLIENT);
-//    input::call(epsilon_share, CLIENT);
-//    input::call(one_share, CLIENT);
-//    input::call(two_share, CLIENT);
-//    input::call(eps_share, CLIENT);
-//    input::call(diff_vec, CLIENT);
-//    input::call(ones_input, CLIENT);
-//
-//    if (party != DEALER) peer->sync();
-//
-//    // --- 5. CROWN 计算 ---
-//    shark::utils::start_timer("End_to_end_time");
-//    shark::utils::start_timer("crown_calculation");
-//
-//    CROWNComputer crown(input_dim);
-//    crown.set_input(x0, eps_share, epsilon_share, one_share, two_share, ones_input);
-//    for (int i = 0; i < num_layers; ++i) {
-//        crown.add_layer(weights[i], biases[i], layer_dims[i], layer_dims[i+1]);
-//    }
-//
-//    auto [final_LB, final_UB] = crown.compute_worst_bound(diff_vec, true_label, target_label);
-//
-//    shark::utils::stop_timer("crown_calculation");
-//    shark::utils::stop_timer("End_to_end_time");
-//
-//    // 输出调试信息
-//    if (enable_debug) {
-//        for (auto& record : debug_records) {
-//            output::call(record.data);
-//        }
-//    }
-//
-//    output::call(final_LB);
-//    output::call(final_UB);
-//
-//    if (party != DEALER) {
-//        if (enable_debug) {
-//            std::cout << "\n============================================" << std::endl;
-//            std::cout << "Debug Output" << std::endl;
-//            std::cout << "============================================" << std::endl;
-//            for (auto& record : debug_records) {
-//                std::cout << record.name << ": [";
-//                int print_count = std::min((int)record.data.size(), 10);
-//                for (int i = 0; i < print_count; ++i) {
-//                    std::cout << std::fixed << std::setprecision(6) << fixed_to_float(record.data[i]);
-//                    if (i < print_count - 1) std::cout << ", ";
-//                }
-//                if ((int)record.data.size() > 10) std::cout << ", ...";
-//                std::cout << "]" << std::endl;
-//            }
-//        }
-//        }
-//
-//    // --- 6. 输出结果 ---
-//    if (party != DEALER) {
-//        std::cout << "\n============================================" << std::endl;
-//        std::cout << "MODEL: " << model_name << std::endl;
-//        std::cout << "EPS: " << eps << " | True: " << true_label << " | Target: " << target_label << std::endl;
-//        std::cout << "--------------------------------------------" << std::endl;
-//        std::cout << "MPC LB: " << std::fixed << std::setprecision(6) << fixed_to_float(final_LB[0]) << std::endl;
-//        std::cout << "MPC UB: " << std::fixed << std::setprecision(6) << fixed_to_float(final_UB[0]) << std::endl;
-//        std::cout << "============================================" << std::endl;
-//
-//        shark::utils::print_all_timers();
-//    }
-//
-//    finalize::call();
-//    return 0;
-//}
