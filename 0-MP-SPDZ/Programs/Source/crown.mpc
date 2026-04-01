@@ -1,0 +1,394 @@
+"""
+CROWN Verification in MP-SPDZ
+
+Implements the CROWN neural network verification algorithm using secure
+multi-party computation. This is the MPC equivalent of
+Crown-simple-batch-model-input.py.
+
+Player 0: model owner (provides weights, biases, and config metadata)
+Player 1: data owner (provides input image)
+
+Compile:
+    ./compile.py crown <num_layers> <d0> <d1> ... <dN> <eps*100000> <true_label> <target_label>
+
+Example (3-layer MNIST, eps=0.03, true=7, target=6):
+    ./compile.py crown 3 784 256 256 10 3000 7 6
+
+Run (pick any protocol):
+    Scripts/semi.sh crown-3-784-256-256-10-3000-7-6
+    Scripts/mascot.sh crown-3-784-256-256-10-3000-7-6
+    Scripts/rep-field.sh crown-3-784-256-256-10-3000-7-6
+
+Data preparation (must run before execution):
+    python Programs/Source/crown_prepare_data.py \\
+        --weights-file <path/to/weights.dat> \\
+        --input-file <path/to/image.bin> \\
+        --layer-dims 784 256 256 10 \\
+        --eps 0.03 --true-label 7 --target-label 6
+"""
+
+import sys
+
+program.options_from_args()
+
+# ==================== Parse compile-time arguments ====================
+if len(program.args) < 6:
+    print('Usage: compile.py crown <num_layers> <d0> ... <dN> <eps*100000> <true_label> <target_label>',
+          file=sys.stderr)
+    sys.exit(1)
+
+num_layers = int(program.args[1])
+layer_dims = [int(program.args[2 + i]) for i in range(num_layers + 1)]
+eps_scaled = int(program.args[2 + num_layers + 1])
+true_label = int(program.args[2 + num_layers + 2])
+target_label = int(program.args[2 + num_layers + 3])
+
+eps_float = eps_scaled / 100000.0
+
+print(f"CROWN MPC Config: layers={num_layers}, dims={layer_dims}, "
+      f"eps={eps_float}, true={true_label}, target={target_label}", file=sys.stderr)
+
+# ==================== Fixed-point precision ====================
+sfix.set_precision(16, 31)
+
+# ==================== Load data from players ====================
+
+# Player 0: metadata + weights/biases
+# Skip metadata fields written by crown_prepare_data.py
+_skip = sfix.get_input_from(0)  # num_layers
+for _ in range(num_layers + 1):
+    _skip = sfix.get_input_from(0)  # layer_dims
+_skip = sfix.get_input_from(0)  # eps
+_skip = sfix.get_input_from(0)  # true_label
+_skip = sfix.get_input_from(0)  # target_label
+
+# Read weights and biases
+weights = []
+biases = []
+
+for i in range(num_layers):
+    in_dim = layer_dims[i]
+    out_dim = layer_dims[i + 1]
+
+    W = sfix.Matrix(out_dim, in_dim)
+    b = sfix.Array(out_dim)
+
+    @for_range_opt(out_dim)
+    def _(r, in_dim=in_dim, W=W):
+        @for_range_opt(in_dim)
+        def _(c, r=r, W=W):
+            W[r][c] = sfix.get_input_from(0)
+
+    @for_range_opt(out_dim)
+    def _(j, b=b):
+        b[j] = sfix.get_input_from(0)
+
+    weights.append(W)
+    biases.append(b)
+
+# Player 1: input image
+input_dim = layer_dims[0]
+x0 = sfix.Array(input_dim)
+
+@for_range_opt(input_dim)
+def _(j):
+    x0[j] = sfix.get_input_from(1)
+
+print_ln("Data loaded: %s layers, input_dim=%s", num_layers, input_dim)
+
+# ==================== Secure helper functions ====================
+
+def s_relu(x):
+    """Secure ReLU: max(x, 0)"""
+    return (x > 0).if_else(x, sfix(0))
+
+
+def s_abs(x):
+    """Secure absolute value: |x|"""
+    return (x > 0).if_else(x, -x)
+
+
+def row_l1_norm(M, row_idx, ncols):
+    """Compute L1-norm of a matrix row: sum_j |M[row_idx][j]|"""
+    acc = MemValue(sfix(0))
+    @for_range_opt(ncols)
+    def _(j):
+        acc.iadd(s_abs(M[row_idx][j]))
+    return acc.read()
+
+
+def add_bias(arr, b, dim):
+    """arr[i] += b[i] for i in range(dim), in place."""
+    @for_range_opt(dim)
+    def _(i):
+        arr[i] = arr[i] + b[i]
+
+
+# ==================== Forward propagation ====================
+
+def forward_pass(x_in, W_list, b_list, n_layers, dims):
+    """Forward propagation: returns output array."""
+    a = sfix.Array(dims[0])
+    a.assign(x_in)
+
+    for i in range(n_layers):
+        out_d = dims[i + 1]
+        # z = W @ a + b
+        z = W_list[i].dot(a)
+        add_bias(z, b_list[i], out_d)
+
+        if i < n_layers - 1:
+            a = sfix.Array(out_d)
+            @for_range_opt(out_d)
+            def _(j, z=z, a=a):
+                a[j] = s_relu(z[j])
+        else:
+            a = z
+    return a
+
+
+# ==================== CROWN core functions ====================
+
+def get_layer_bound_first(W, b, x0_arr, eps_val, out_dim, in_dim):
+    """
+    Compute pre-ReLU bounds for the first layer.
+    UB = W @ x0 + eps * ||W||_1 + b
+    LB = W @ x0 - eps * ||W||_1 + b
+    """
+    Ax0 = W.dot(x0_arr)
+
+    UB = sfix.Array(out_dim)
+    LB = sfix.Array(out_dim)
+    @for_range_opt(out_dim)
+    def _(i):
+        norm_i = row_l1_norm(W, i, in_dim)
+        radius_i = sfix(eps_val) * norm_i
+        UB[i] = Ax0[i] + radius_i + b[i]
+        LB[i] = Ax0[i] - radius_i + b[i]
+
+    return UB, LB
+
+
+def compute_alpha(UB, LB, dim):
+    """
+    Compute relaxation slopes alpha for each neuron.
+    - Dead (UB <= 0): alpha = 0
+    - Active (LB > 0): alpha = 1
+    - Unstable (UB > 0, LB <= 0): alpha = UB / (UB - LB)
+    """
+    alpha = sfix.Array(dim)
+    @for_range_opt(dim)
+    def _(i):
+        ub_pos = (UB[i] > 0)
+        lb_pos = (LB[i] > 0)
+        # Safe division: for dead neurons UB-LB could be 0, but ub_pos=0 masks it
+        safe_denom = UB[i] - LB[i] + sfix(1e-7)
+        unstable_val = UB[i] / safe_denom
+        val = ub_pos.if_else(lb_pos.if_else(sfix(1), unstable_val), sfix(0))
+        alpha[i] = val
+    return alpha
+
+
+def is_unstable_mask(UB, LB, dim):
+    """
+    Returns an sfix array where mask[k] = 1 if neuron k is unstable, else 0.
+    Unstable: UB > 0 AND LB <= 0.
+    """
+    mask = sfix.Array(dim)
+    @for_range_opt(dim)
+    def _(k):
+        ub_pos = (UB[k] > 0)
+        lb_not_pos = sfix(1) - (LB[k] > 0).if_else(sfix(1), sfix(0))
+        mask[k] = ub_pos.if_else(lb_not_pos, sfix(0))
+    return mask
+
+
+def scale_matrix_cols(W, alpha_arr, rows, cols):
+    """Return new matrix M where M[r][c] = W[r][c] * alpha_arr[c]."""
+    M = sfix.Matrix(rows, cols)
+    @for_range_opt(rows)
+    def _(r):
+        @for_range_opt(cols)
+        def _(c, r=r):
+            M[r][c] = W[r][c] * alpha_arr[c]
+    return M
+
+
+def get_layer_bound_crown(W_list, b_list, UBs_list, LBs_list, alphas_list,
+                          x0_arr, eps_val, dims_sub):
+    """
+    CROWN method: compute pre-ReLU bounds for a deeper layer via
+    backward propagation of linear relaxation.
+
+    Args:
+        W_list:      weights[0..nlayer-1]
+        b_list:      biases[0..nlayer-1]
+        UBs_list:    [x0+eps, preReLU_UB_0, preReLU_UB_1, ...]
+        LBs_list:    [x0-eps, preReLU_LB_0, preReLU_LB_1, ...]
+        alphas_list: [alpha_0, alpha_1, ...]
+        dims_sub:    layer dimensions for this sub-network
+    """
+    nlayer = len(W_list)
+    curr_out = dims_sub[-1]
+    prev_dim = dims_sub[-2]
+
+    # A = W[-1] * diag(alpha[-1])  (or just W[-1] if single layer)
+    if nlayer >= 2:
+        A = scale_matrix_cols(W_list[-1], alphas_list[-1], curr_out, prev_dim)
+    else:
+        A = sfix.Matrix(curr_out, prev_dim)
+        @for_range_opt(curr_out)
+        def _(r):
+            @for_range_opt(prev_dim)
+            def _(c, r=r):
+                A[r][c] = W_list[-1][r][c]
+
+    # constants = copy of b[-1]
+    constants = sfix.Array(curr_out)
+    constants.assign(b_list[-1])
+
+    # Correction accumulators
+    UB_corr = sfix.Array(curr_out)
+    LB_corr = sfix.Array(curr_out)
+    UB_corr.assign_all(0)
+    LB_corr.assign_all(0)
+
+    # Backward propagation
+    for step_i in range(nlayer - 1, 0, -1):
+        step_dim = dims_sub[step_i]  # dimension of layer step_i
+
+        # constants += A @ b[step_i - 1]
+        Ab = A.dot(b_list[step_i - 1])
+        @for_range_opt(curr_out)
+        def _(i, Ab=Ab):
+            constants[i] = constants[i] + Ab[i]
+
+        # Correction for unstable neurons
+        # In the original CROWN: only unstable neurons contribute corrections.
+        # unstable[k]: UB[step_i][k] > 0 AND LB[step_i][k] <= 0
+        unstable = is_unstable_mask(UBs_list[step_i], LBs_list[step_i], step_dim)
+
+        @for_range_opt(curr_out)
+        def _(j, step_dim=step_dim, step_i=step_i, unstable=unstable):
+            @for_range_opt(step_dim)
+            def _(k, j=j):
+                a_jk = A[j][k]
+                a_pos = (a_jk > 0)
+                lb_k = LBs_list[step_i][k]
+                mask_k = unstable[k]
+                # UB correction: when A[j][k] > 0 and neuron unstable
+                ub_c = a_pos.if_else(-a_jk * lb_k * mask_k, sfix(0))
+                # LB correction: when A[j][k] < 0 and neuron unstable
+                lb_c = a_pos.if_else(sfix(0), -a_jk * lb_k * mask_k)
+                UB_corr[j] = UB_corr[j] + ub_c
+                LB_corr[j] = LB_corr[j] + lb_c
+
+        # Update A for next backward step
+        if step_i > 1:
+            W_scaled = scale_matrix_cols(W_list[step_i - 1],
+                                         alphas_list[step_i - 2],
+                                         step_dim, dims_sub[step_i - 1])
+            A = A.dot(W_scaled)
+        else:
+            # Input layer: no alpha scaling
+            A = A.dot(W_list[0])
+
+    # Final bounds: corrections + constants + A@x0 +/- eps * ||A||_1
+    input_d = dims_sub[0]
+    Ax0 = A.dot(x0_arr)
+
+    UB_result = sfix.Array(curr_out)
+    LB_result = sfix.Array(curr_out)
+    @for_range_opt(curr_out)
+    def _(i):
+        norm_i = row_l1_norm(A, i, input_d)
+        radius_i = sfix(eps_val) * norm_i
+        UB_result[i] = UB_corr[i] + constants[i] + Ax0[i] + radius_i
+        LB_result[i] = LB_corr[i] + constants[i] + Ax0[i] - radius_i
+
+    return UB_result, LB_result
+
+
+# ==================== Main CROWN computation ====================
+
+print_ln("============================================")
+print_ln("CROWN Verification (MP-SPDZ)")
+print_ln("  %s layers, eps=%s", num_layers, sfix(eps_float).reveal())
+print_ln("  true_label=%s, target_label=%s", true_label, target_label)
+print_ln("============================================")
+
+# --- Forward pass (for verification) ---
+output = forward_pass(x0, weights, biases, num_layers, layer_dims)
+print_ln("Forward output (revealed):")
+for i in range(layer_dims[-1]):
+    print_ln("  class %s: %s", i, output[i].reveal())
+
+# --- Layer 0 bounds ---
+UB0, LB0 = get_layer_bound_first(weights[0], biases[0], x0, eps_float,
+                                  layer_dims[1], layer_dims[0])
+preReLU_UBs = [UB0]
+preReLU_LBs = [LB0]
+alphas = [compute_alpha(UB0, LB0, layer_dims[1])]
+print_ln("Layer 0 bounds computed.")
+
+# Input bounds: x0 +/- eps
+x0_UB = sfix.Array(input_dim)
+x0_LB = sfix.Array(input_dim)
+@for_range_opt(input_dim)
+def _(j):
+    x0_UB[j] = x0[j] + sfix(eps_float)
+    x0_LB[j] = x0[j] - sfix(eps_float)
+
+# --- Middle layers (1 .. num_layers-2) ---
+for layer in range(1, num_layers - 1):
+    UBs_crown = [x0_UB] + preReLU_UBs
+    LBs_crown = [x0_LB] + preReLU_LBs
+    sub_dims = layer_dims[:layer + 2]
+
+    UB_l, LB_l = get_layer_bound_crown(
+        weights[:layer + 1], biases[:layer + 1],
+        UBs_crown, LBs_crown, alphas,
+        x0, eps_float, sub_dims
+    )
+    preReLU_UBs.append(UB_l)
+    preReLU_LBs.append(LB_l)
+    alphas.append(compute_alpha(UB_l, LB_l, layer_dims[layer + 1]))
+    print_ln("Layer %s bounds computed.", layer)
+
+# --- Final margin layer: f_true - f_target ---
+last_h = layer_dims[-2]
+W_diff = sfix.Matrix(1, last_h)
+b_diff = sfix.Array(1)
+
+@for_range_opt(last_h)
+def _(j):
+    W_diff[0][j] = weights[-1][true_label][j] - weights[-1][target_label][j]
+b_diff[0] = biases[-1][true_label] - biases[-1][target_label]
+
+UBs_final = [x0_UB] + preReLU_UBs
+LBs_final = [x0_LB] + preReLU_LBs
+
+W_final = list(weights[:-1]) + [W_diff]
+b_final = list(biases[:-1]) + [b_diff]
+dims_final = layer_dims[:-1] + [1]
+
+UB_margin, LB_margin = get_layer_bound_crown(
+    W_final, b_final,
+    UBs_final, LBs_final, alphas,
+    x0, eps_float, dims_final
+)
+
+# ==================== Output results ====================
+print_ln("")
+print_ln("============================================")
+print_ln("CROWN Results")
+print_ln("============================================")
+print_ln("  Eps        = %s", sfix(eps_float).reveal())
+print_ln("  True label = %s, Target label = %s", true_label, target_label)
+lb_val = LB_margin[0].reveal()
+ub_val = UB_margin[0].reveal()
+print_ln("  Lower Bound (f_true - f_target) = %s", lb_val)
+print_ln("  Upper Bound (f_true - f_target) = %s", ub_val)
+robust_bit = (LB_margin[0] > 0).reveal()
+print_ln("  Robust: %s (1=yes, 0=no)", robust_bit)
+print_ln("============================================")
