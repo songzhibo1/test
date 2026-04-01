@@ -114,7 +114,7 @@ if [ ! -f "$INPUT_FILE" ]; then
     exit 1
 fi
 
-python3 Programs/Source/crown_prepare_data.py \
+python3 Programs/Source/crown/crown_prepare_data.py \
     --weights-file "$WEIGHTS_FILE" \
     --input-file "$INPUT_FILE" \
     --layer-dims $LAYER_DIMS \
@@ -129,13 +129,13 @@ echo "Data preparation complete."
 echo ""
 echo "[Step 2] Compiling crown.mpc..."
 
-COMPILE_ARGS="crown $NUM_LAYERS $LAYER_DIMS $EPS_SCALED $TRUE_LABEL $TARGET_LABEL"
+COMPILE_ARGS="crown/crown $NUM_LAYERS $LAYER_DIMS $EPS_SCALED $TRUE_LABEL $TARGET_LABEL"
 echo "Compile args: $COMPILE_ARGS"
 
 python3 ./compile.py $COMPILE_ARGS
 
 # The compiled program name includes the args
-PROGRAM_NAME="crown-${NUM_LAYERS}"
+PROGRAM_NAME="crown/crown-${NUM_LAYERS}"
 for d in $LAYER_DIMS; do
     PROGRAM_NAME="${PROGRAM_NAME}-${d}"
 done
