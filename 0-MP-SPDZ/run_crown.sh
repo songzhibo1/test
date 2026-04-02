@@ -27,21 +27,35 @@ cd "$SCRIPT_DIR"
 PROTOCOL="${1:-semi}"
 
 # Model configuration presets
-MODEL_PRESET="${2:-mnist_3layer_256}"
+MODEL_PRESET="${2:-mnist_3layer_20}"
 
-# Crown MPC data base path
-CROWN_DATA_BASE="../shark/shark_crown_ml/crown_mpc_data"
+# ==================== Crown MPC data base path ====================
+# Docker 环境路径:  /usr/src/MP-SPDZ  运行SPDZ
+#                   /usr/src/crown/shark_sh/shark_crown_ml/crown_mpc_data  数据目录
+# 可通过环境变量 CROWN_DATA_BASE 覆盖
+CROWN_DATA_BASE="${CROWN_DATA_BASE:-/usr/src/crown/shark_sh/shark_crown_ml/crown_mpc_data}"
 
 # ==================== Model Configurations ====================
 # Format: num_layers hidden_dim input_dim output_dim data_folder_name
 declare -A CONFIGS
 
-# MNIST models
+# MNIST small models (hidden=20, input_dim=784)
+CONFIGS["mnist_2layer_20"]="2 20 784 10 mnist_2layer_relu_20_best"
+CONFIGS["mnist_3layer_20"]="3 20 784 10 mnist_3layer_relu_20_best"
+
+# MNIST test models (hidden=20, input_dim=784)
+CONFIGS["test_mnist_4layer_20"]="4 20 784 10 test_mnist_4layer_relu_20_best"
+CONFIGS["test_mnist_5layer_20"]="5 20 784 10 test_mnist_5layer_relu_20_best"
+CONFIGS["test_mnist_6layer_20"]="6 20 784 10 test_mnist_6layer_relu_20_best"
+CONFIGS["test_mnist_8layer_20"]="8 20 784 10 test_mnist_8layer_relu_20_best"
+
+# MNIST large models (hidden=256, input_dim=784)
 CONFIGS["mnist_3layer_256"]="3 256 784 10 vnncomp_mnist_3layer_relu_256_best"
 CONFIGS["mnist_5layer_256"]="5 256 784 10 vnncomp_mnist_5layer_relu_256_best"
 CONFIGS["mnist_7layer_256"]="7 256 784 10 vnncomp_mnist_7layer_relu_256_best"
 
-# CIFAR models
+# CIFAR models (input_dim=3072)
+CONFIGS["cifar_6layer_2048"]="6 2048 3072 10 cifar_6layer_relu_2048_best"
 CONFIGS["cifar_5layer_100"]="5 100 3072 10 eran_cifar_5layer_relu_100_best"
 CONFIGS["cifar_7layer_100"]="7 100 3072 10 eran_cifar_7layer_relu_100_best"
 CONFIGS["cifar_10layer_200"]="10 200 3072 10 eran_cifar_10layer_relu_200_best"
@@ -105,7 +119,7 @@ echo "[Step 1] Preparing input data..."
 if [ ! -f "$WEIGHTS_FILE" ]; then
     echo "ERROR: Weights file not found: $WEIGHTS_FILE"
     echo "Please run the data conversion script first:"
-    echo "  cd ../shark/shark_crown_ml && python Convert-for-crown-mpc.py"
+    echo "  cd /usr/src/crown/shark_sh/shark_crown_ml && python Convert-for-crown-mpc.py"
     exit 1
 fi
 
