@@ -163,6 +163,9 @@ echo "[Step 3] Running with protocol: $PROTOCOL"
 
 # Map protocol names to scripts
 case "$PROTOCOL" in
+    emulate|emu)
+        SCRIPT="Scripts/emulate.sh"
+        ;;
     semi|semi-honest)
         SCRIPT="Scripts/semi.sh"
         ;;
@@ -201,7 +204,7 @@ case "$PROTOCOL" in
         ;;
     *)
         echo "ERROR: Unknown protocol '$PROTOCOL'"
-        echo "Available: semi, mascot, rep-field, shamir, mal-rep-field, semi2k, spdz2k, rep-ring, hemi, soho"
+        echo "Available: emulate, semi, mascot, rep-field, shamir, mal-rep-field, semi2k, spdz2k, rep-ring, hemi, soho"
         exit 1
         ;;
 esac
