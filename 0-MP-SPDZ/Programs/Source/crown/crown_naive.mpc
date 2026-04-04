@@ -20,7 +20,8 @@ Run:
 """
 
 import sys
-
+#program.use_trunc_pr = True
+program.use_edabit(True)
 program.options_from_args()
 
 # ==================== Parse compile-time arguments ====================
@@ -43,6 +44,14 @@ print(f"CROWN (naive): layers={num_layers}, dims={layer_dims}, eps={eps_float}, 
 sfix.set_precision(16, 31)
 
 # ==================== Load data ====================
+# ==================== Load data ====================
+# 【新增修复代码】：跳过 crown_prepare_data.py 写入的前置元数据 (Metadata)
+# 元数据包含：num_layers(1个) + layer_dims(num_layers+1个) + eps(1个) + true_label(1个) + target_label(1个)
+# 总共需要跳过 num_layers + 5 个数据
+_skip_count = num_layers + 5
+for _ in range(_skip_count):
+    _dummy = sfix.get_input_from(0)
+
 # Player 0: weights and biases (same input format as optimized version)
 weights = []
 biases = []
