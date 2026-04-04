@@ -321,7 +321,7 @@ def compute_middle_layer_bounds(layer_idx, W_list, b_list, bounds_list, dims):
         base = Ax0[i] + constants[i]
         radius = sfix(eps_float) * dualnorm[i]
         UB[i] = base + ub_corr[i] + radius
-        LB[i] = base - lb_corr[i] - radius
+        LB[i] = base + lb_corr[i] - radius
 
     return UB, LB
 
@@ -431,7 +431,7 @@ def compute_final_diff_bounds(W_list, b_list, bounds_list, dims, n_layers):
     base = Ax0.read() + constants.read()
 
     final_UB = base + ub_corr_total.read() + radius
-    final_LB = base - lb_corr_total.read() - radius
+    final_LB = base + lb_corr_total.read() - radius
 
     return final_LB, final_UB
 
