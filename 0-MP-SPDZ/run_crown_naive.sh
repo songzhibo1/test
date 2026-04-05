@@ -2,23 +2,37 @@
 set -e
 
 # ============================================================
-# CROWN Verification Runner for MP-SPDZ (NAIVE VERSION)
+# CROWN Verification Runner (Naive) for MP-SPDZ
 #
-# This script runs the NAIVE version of CROWN (crown_naive.mpc)
-# which uses if/else comparisons like the original Python code,
-# instead of the relu-based optimization in crown.mpc.
+# Runs crown_naive.mpc -- faithful translation of the plaintext
+# Python CROWN implementation with no optimizations.
+# Uses explicit if/else comparisons for neuron states and
+# per-element sign checks for corrections.
+#
+# Results saved to: crown-results/<protocol>/crown_naive/<model>/eps_<eps>/
 #
 # Usage:
 #   ./run_crown_naive.sh [protocol] [model_config]
 #
 # Examples:
-#   ./run_crown_naive.sh emulate                       # Default: 3-layer MNIST
-#   ./run_crown_naive.sh emulate mnist_3layer_20       # 3-layer MNIST hidden=20
-#   ./run_crown_naive.sh semi mnist_2layer_20          # 2-layer, semi-honest
+#   ./run_crown_naive.sh semi
+#   ./run_crown_naive.sh semi mnist_3layer_20
+#   ./run_crown_naive.sh mascot mnist_5layer_256
+#
+# Environment variables:
+#   CROWN_EPS          - perturbation radius (default: 0.03)
+#   CROWN_TRUE_LABEL   - true class label (default: 7)
+#   CROWN_TARGET_LABEL - target attack label (default: 6)
+#   CROWN_IMAGE_ID     - image index (default: 0)
+#   CROWN_DATA_BASE    - path to crown data directory
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# MPC variant identifier
+MPC_VARIANT="crown_naive"
+MPC_SOURCE="crown/crown_naive"
 
 # Default protocol
 PROTOCOL="${1:-semi}"
@@ -70,38 +84,45 @@ INPUT_DIM=${config_parts[2]}
 OUTPUT_DIM=${config_parts[3]}
 DATA_FOLDER=${config_parts[4]}
 
-# Build layer_dims
+# Build layer_dims: [input_dim, hidden, hidden, ..., output_dim]
 LAYER_DIMS="$INPUT_DIM"
 for ((i=0; i<NUM_LAYERS-1; i++)); do
     LAYER_DIMS="$LAYER_DIMS $HIDDEN_DIM"
 done
 LAYER_DIMS="$LAYER_DIMS $OUTPUT_DIM"
 
-# Test parameters
+# Test parameters (configurable via env vars)
 EPS="${CROWN_EPS:-0.03}"
 TRUE_LABEL="${CROWN_TRUE_LABEL:-7}"
 TARGET_LABEL="${CROWN_TARGET_LABEL:-6}"
 IMAGE_ID="${CROWN_IMAGE_ID:-0}"
 
-EPS_SCALED=$(python3 -c "print(int(${EPS} * 100000))")
-
 # Paths
 WEIGHTS_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/weights/weights.dat"
 INPUT_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/images/${IMAGE_ID}.bin"
 
+# ==================== Results directory (variant-specific) ====================
+RESULTS_BASE_DIR="crown-results/${PROTOCOL}/${MPC_VARIANT}/${MODEL_PRESET}/eps_${EPS}"
+mkdir -p "$RESULTS_BASE_DIR"
+
+RESULT_LOG="${RESULTS_BASE_DIR}/image_${IMAGE_ID}_${PROTOCOL}_log.txt"
+RESULT_SUMMARY="${RESULTS_BASE_DIR}/image_${IMAGE_ID}_${PROTOCOL}_summary.txt"
+
 echo "========================================"
-echo "CROWN Verification on MP-SPDZ (NAIVE)"
+echo "CROWN Verification on MP-SPDZ (Naive)"
 echo "========================================"
+echo "MPC variant:  $MPC_VARIANT"
 echo "Protocol:     $PROTOCOL"
 echo "Model:        $MODEL_PRESET ($DATA_FOLDER)"
 echo "Layers:       $NUM_LAYERS"
 echo "Layer dims:   $LAYER_DIMS"
-echo "Eps:          $EPS (scaled: $EPS_SCALED)"
+echo "Eps:          $EPS"
 echo "True label:   $TRUE_LABEL"
 echo "Target label: $TARGET_LABEL"
 echo "Image ID:     $IMAGE_ID"
 echo "Weights:      $WEIGHTS_FILE"
 echo "Input:        $INPUT_FILE"
+echo "Results dir:  $RESULTS_BASE_DIR"
 echo "========================================"
 
 # ==================== Step 1: Prepare Data ====================
@@ -133,17 +154,17 @@ echo "Data preparation complete."
 echo ""
 echo "[Step 2] Compiling crown_naive.mpc..."
 
-COMPILE_ARGS="crown/crown_naive $NUM_LAYERS $LAYER_DIMS $EPS_SCALED $TRUE_LABEL $TARGET_LABEL"
+# No eps/labels in compile args (they are CLIENT secrets)
+COMPILE_ARGS="${MPC_SOURCE} $NUM_LAYERS $LAYER_DIMS"
 echo "Compile args: $COMPILE_ARGS"
 
 python3 ./compile.py $COMPILE_ARGS
 
-# The compiled program name includes the args
-PROGRAM_NAME="crown/crown_naive-${NUM_LAYERS}"
+# Program name: crown/crown_naive-<num_layers>-<d0>-...-<dN>
+PROGRAM_NAME="${MPC_SOURCE}-${NUM_LAYERS}"
 for d in $LAYER_DIMS; do
     PROGRAM_NAME="${PROGRAM_NAME}-${d}"
 done
-PROGRAM_NAME="${PROGRAM_NAME}-${EPS_SCALED}-${TRUE_LABEL}-${TARGET_LABEL}"
 
 echo "Compiled program: $PROGRAM_NAME"
 
@@ -151,6 +172,7 @@ echo "Compiled program: $PROGRAM_NAME"
 echo ""
 echo "[Step 3] Running with protocol: $PROTOCOL"
 
+# Map protocol names to scripts
 case "$PROTOCOL" in
     emulate|emu)
         SCRIPT="Scripts/emulate.sh"
@@ -206,6 +228,53 @@ fi
 
 echo "Running: $SCRIPT $PROGRAM_NAME"
 echo "========================================"
-bash "$SCRIPT" "$PROGRAM_NAME"
+
+# Run and capture output
+# Run with -v for offline/online phase breakdown
+bash "$SCRIPT" "$PROGRAM_NAME" -v 2>&1 | tee "$RESULT_LOG"
+
 echo "========================================"
 echo "Done!"
+
+# ==================== Step 4: Save Summary ====================
+echo ""
+echo "[Step 4] Saving results..."
+
+{
+    echo "============================================"
+    echo "CROWN Verification Summary (Naive)"
+    echo "============================================"
+    echo "Date:         $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "MPC variant:  $MPC_VARIANT"
+    echo "Model:        $MODEL_PRESET ($DATA_FOLDER)"
+    echo "Layers:       $NUM_LAYERS"
+    echo "Layer dims:   $LAYER_DIMS"
+    echo "Hidden dim:   $HIDDEN_DIM"
+    echo "Input dim:    $INPUT_DIM"
+    echo "Output dim:   $OUTPUT_DIM"
+    echo "EPS:          $EPS"
+    echo "True label:   $TRUE_LABEL"
+    echo "Target label: $TARGET_LABEL"
+    echo "Image ID:     $IMAGE_ID"
+    echo "Protocol:     $PROTOCOL"
+    echo "--------------------------------------------"
+    echo "Computation Results:"
+    grep -E "MPC LB:|MPC UB:|Robust:" "$RESULT_LOG" 2>/dev/null || echo "  (no results found)"
+    echo "--------------------------------------------"
+    echo "Performance (Total):"
+    grep -E "^Time =|^Data sent =|^Global data sent =" "$RESULT_LOG" 2>/dev/null || echo "  (no performance data)"
+    echo "--------------------------------------------"
+    echo "Phase Breakdown:"
+    grep -E "ANDs in preprocessing" "$RESULT_LOG" 2>/dev/null | head -1
+    grep -E "^Spent .* on the online phase" "$RESULT_LOG" 2>/dev/null | head -1
+    if ! grep -qE "^Spent .* on the online phase" "$RESULT_LOG" 2>/dev/null; then
+        echo "  (no phase breakdown available - run with -v)"
+    fi
+    echo "============================================"
+} > "$RESULT_SUMMARY"
+
+echo "Results saved:"
+echo "  Full log:  $RESULT_LOG"
+echo "  Summary:   $RESULT_SUMMARY"
+echo ""
+cat "$RESULT_SUMMARY"
