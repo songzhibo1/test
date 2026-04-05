@@ -256,10 +256,18 @@ preReLU_LBs = [LB0]
 alphas = [compute_alpha(UB0, LB0, layer_dims[1])]
 print_ln("Layer 0 bounds computed.")
 
+# Input bounds: x0 +/- eps (needed by get_layer_bound_crown as index 0)
+x0_UB = sfix.Array(input_dim)
+x0_LB = sfix.Array(input_dim)
+@for_range_opt(input_dim)
+def _(j):
+    x0_UB[j] = x0[j] + eps_secret
+    x0_LB[j] = x0[j] - eps_secret
+
 # --- Middle layers (1 .. num_layers-2) ---
 for layer in range(1, num_layers - 1):
-    UBs_crown = preReLU_UBs
-    LBs_crown = preReLU_LBs
+    UBs_crown = [x0_UB] + preReLU_UBs
+    LBs_crown = [x0_LB] + preReLU_LBs
     sub_dims = layer_dims[:layer + 2]
 
     UB_l, LB_l = get_layer_bound_crown(
@@ -300,8 +308,8 @@ def _(j):
 b_diff = sfix.Array(1)
 b_diff[0] = b_diff_val.read()
 
-UBs_final = preReLU_UBs
-LBs_final = preReLU_LBs
+UBs_final = [x0_UB] + preReLU_UBs
+LBs_final = [x0_LB] + preReLU_LBs
 
 W_final = list(weights[:-1]) + [W_diff]
 b_final = list(biases[:-1]) + [b_diff]
