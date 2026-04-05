@@ -2,35 +2,28 @@
 set -e
 
 # ============================================================
-# CROWN Verification Runner for MP-SPDZ
+# CROWN Verification Runner (Sign-Split Optimized) for MP-SPDZ
 #
-# This script:
-#   1. Prepares input data from Crown MPC binary files
-#   2. Compiles the crown.mpc program
-#   3. Runs it with the selected protocol
-#   4. Saves results to crown-results/crown_relu/ directory
+# Runs crown_signsplit.mpc -- sign-split optimization that halves
+# comparison count vs relu-based crown.mpc while keeping batch ops.
+#
+# Results saved to: crown-results/crown_signsplit/<protocol>/<model>/eps_<eps>/
 #
 # Usage:
-#   ./run_crown.sh [protocol] [model_config]
+#   ./run_crown_signsplit.sh [protocol] [model_config]
 #
 # Examples:
-#   ./run_crown.sh semi                           # Default: 3-layer MNIST
-#   ./run_crown.sh semi mnist_3layer_20
-#   ./run_crown.sh mascot mnist_5layer_256
-#
-# Environment variables:
-#   CROWN_EPS          - perturbation radius (default: 0.03)
-#   CROWN_TRUE_LABEL   - true class label (default: 7)
-#   CROWN_TARGET_LABEL - target attack label (default: 6)
-#   CROWN_IMAGE_ID     - image index (default: 0)
-#   CROWN_DATA_BASE    - path to crown data directory
+#   ./run_crown_signsplit.sh semi
+#   ./run_crown_signsplit.sh semi mnist_3layer_20
+#   ./run_crown_signsplit.sh mascot mnist_5layer_256
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # MPC variant identifier
-MPC_VARIANT="crown_relu"
+MPC_VARIANT="crown_signsplit"
+MPC_SOURCE="crown/crown_signsplit"
 
 # Default protocol
 PROTOCOL="${1:-semi}"
@@ -103,12 +96,11 @@ INPUT_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/images/${IMAGE_ID}.bin"
 RESULTS_BASE_DIR="crown-results/${MPC_VARIANT}/${PROTOCOL}/${MODEL_PRESET}/eps_${EPS}"
 mkdir -p "$RESULTS_BASE_DIR"
 
-# Result file naming: image_<id>_<protocol>.txt and summary
 RESULT_LOG="${RESULTS_BASE_DIR}/image_${IMAGE_ID}_${PROTOCOL}_log.txt"
 RESULT_SUMMARY="${RESULTS_BASE_DIR}/image_${IMAGE_ID}_${PROTOCOL}_summary.txt"
 
 echo "========================================"
-echo "CROWN Verification on MP-SPDZ (ReLU-based)"
+echo "CROWN Verification on MP-SPDZ (Sign-Split)"
 echo "========================================"
 echo "MPC variant:  $MPC_VARIANT"
 echo "Protocol:     $PROTOCOL"
@@ -151,16 +143,15 @@ echo "Data preparation complete."
 
 # ==================== Step 2: Compile ====================
 echo ""
-echo "[Step 2] Compiling crown.mpc..."
+echo "[Step 2] Compiling ${MPC_SOURCE}.mpc..."
 
-# No eps/labels in compile args (they are CLIENT secrets)
-COMPILE_ARGS="crown/crown $NUM_LAYERS $LAYER_DIMS"
+COMPILE_ARGS="${MPC_SOURCE} $NUM_LAYERS $LAYER_DIMS"
 echo "Compile args: $COMPILE_ARGS"
 
 python3 ./compile.py $COMPILE_ARGS
 
-# Program name: crown/crown-<num_layers>-<d0>-...-<dN>
-PROGRAM_NAME="crown/crown-${NUM_LAYERS}"
+# Program name: crown/crown_signsplit-<num_layers>-<d0>-...-<dN>
+PROGRAM_NAME="${MPC_SOURCE}-${NUM_LAYERS}"
 for d in $LAYER_DIMS; do
     PROGRAM_NAME="${PROGRAM_NAME}-${d}"
 done
@@ -228,7 +219,7 @@ fi
 echo "Running: $SCRIPT $PROGRAM_NAME"
 echo "========================================"
 
-# Run and capture output (tee to both stdout and log file)
+# Run and capture output
 bash "$SCRIPT" "$PROGRAM_NAME" 2>&1 | tee "$RESULT_LOG"
 
 echo "========================================"
@@ -240,7 +231,7 @@ echo "[Step 4] Saving results..."
 
 {
     echo "============================================"
-    echo "CROWN Verification Summary (ReLU-based)"
+    echo "CROWN Verification Summary (Sign-Split)"
     echo "============================================"
     echo "Date:         $(date '+%Y-%m-%d %H:%M:%S')"
     echo "MPC variant:  $MPC_VARIANT"

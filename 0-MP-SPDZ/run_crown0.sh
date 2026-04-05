@@ -23,6 +23,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# MPC variant identifier
+MPC_VARIANT="crown0_ifelse"
+
 # Default protocol
 PROTOCOL="${1:-semi}"
 
@@ -97,9 +100,17 @@ EPS_SCALED=$(python3 -c "print(int(${EPS} * 100000))")
 WEIGHTS_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/weights/weights.dat"
 INPUT_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/images/${IMAGE_ID}.bin"
 
+# ==================== Results directory (variant-specific) ====================
+RESULTS_BASE_DIR="crown-results/${MPC_VARIANT}/${PROTOCOL}/${MODEL_PRESET}/eps_${EPS}"
+mkdir -p "$RESULTS_BASE_DIR"
+
+RESULT_LOG="${RESULTS_BASE_DIR}/image_${IMAGE_ID}_${PROTOCOL}_log.txt"
+RESULT_SUMMARY="${RESULTS_BASE_DIR}/image_${IMAGE_ID}_${PROTOCOL}_summary.txt"
+
 echo "========================================"
-echo "CROWN Verification on MP-SPDZ"
+echo "CROWN Verification on MP-SPDZ (if_else-based)"
 echo "========================================"
+echo "MPC variant:  $MPC_VARIANT"
 echo "Protocol:     $PROTOCOL"
 echo "Model:        $MODEL_PRESET ($DATA_FOLDER)"
 echo "Layers:       $NUM_LAYERS"
@@ -110,6 +121,7 @@ echo "Target label: $TARGET_LABEL"
 echo "Image ID:     $IMAGE_ID"
 echo "Weights:      $WEIGHTS_FILE"
 echo "Input:        $INPUT_FILE"
+echo "Results dir:  $RESULTS_BASE_DIR"
 echo "========================================"
 
 # ==================== Step 1: Prepare Data ====================
@@ -217,6 +229,45 @@ fi
 
 echo "Running: $SCRIPT $PROGRAM_NAME"
 echo "========================================"
-bash "$SCRIPT" "$PROGRAM_NAME"
+
+# Run and capture output
+bash "$SCRIPT" "$PROGRAM_NAME" 2>&1 | tee "$RESULT_LOG"
+
 echo "========================================"
 echo "Done!"
+
+# ==================== Step 4: Save Summary ====================
+echo ""
+echo "[Step 4] Saving results..."
+
+{
+    echo "============================================"
+    echo "CROWN Verification Summary (if_else-based)"
+    echo "============================================"
+    echo "Date:         $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "MPC variant:  $MPC_VARIANT"
+    echo "Model:        $MODEL_PRESET ($DATA_FOLDER)"
+    echo "Layers:       $NUM_LAYERS"
+    echo "Layer dims:   $LAYER_DIMS"
+    echo "Hidden dim:   $HIDDEN_DIM"
+    echo "Input dim:    $INPUT_DIM"
+    echo "Output dim:   $OUTPUT_DIM"
+    echo "EPS:          $EPS"
+    echo "True label:   $TRUE_LABEL"
+    echo "Target label: $TARGET_LABEL"
+    echo "Image ID:     $IMAGE_ID"
+    echo "Protocol:     $PROTOCOL"
+    echo "--------------------------------------------"
+    echo "Computation Results:"
+    grep -E "Lower Bound|Upper Bound|Robust:" "$RESULT_LOG" 2>/dev/null || echo "  (no results found)"
+    echo "--------------------------------------------"
+    echo "Performance:"
+    grep -E "^Time =|^Data sent =|^Global data sent =" "$RESULT_LOG" 2>/dev/null || echo "  (no performance data)"
+    echo "============================================"
+} > "$RESULT_SUMMARY"
+
+echo "Results saved:"
+echo "  Full log:  $RESULT_LOG"
+echo "  Summary:   $RESULT_SUMMARY"
+echo ""
+cat "$RESULT_SUMMARY"
