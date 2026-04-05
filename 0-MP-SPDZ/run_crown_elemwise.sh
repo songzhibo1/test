@@ -2,35 +2,28 @@
 set -e
 
 # ============================================================
-# CROWN Verification Runner for MP-SPDZ
+# CROWN Verification Runner (Element-wise) for MP-SPDZ
 #
-# This script:
-#   1. Prepares input data from Crown MPC binary files
-#   2. Compiles the crown.mpc program
-#   3. Runs it with the selected protocol
-#   4. Saves results to crown-results/crown_relu/ directory
+# Runs crown_elemwise.mpc -- element-wise if_else corrections
+# with per-neuron comparisons in nested loops.
+#
+# Results saved to: crown-results/<protocol>/crown_elemwise/<model>/eps_<eps>/
 #
 # Usage:
-#   ./run_crown.sh [protocol] [model_config]
+#   ./run_crown_elemwise.sh [protocol] [model_config]
 #
 # Examples:
-#   ./run_crown.sh semi                           # Default: 3-layer MNIST
-#   ./run_crown.sh semi mnist_3layer_20
-#   ./run_crown.sh mascot mnist_5layer_256
-#
-# Environment variables:
-#   CROWN_EPS          - perturbation radius (default: 0.03)
-#   CROWN_TRUE_LABEL   - true class label (default: 7)
-#   CROWN_TARGET_LABEL - target attack label (default: 6)
-#   CROWN_IMAGE_ID     - image index (default: 0)
-#   CROWN_DATA_BASE    - path to crown data directory
+#   ./run_crown_elemwise.sh semi
+#   ./run_crown_elemwise.sh semi mnist_3layer_20
+#   ./run_crown_elemwise.sh mascot mnist_5layer_256
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # MPC variant identifier
-MPC_VARIANT="crown_relu"
+MPC_VARIANT="crown_elemwise"
+MPC_SOURCE="crown/crown_elemwise"
 
 # Default protocol
 PROTOCOL="${1:-semi}"
@@ -39,9 +32,13 @@ PROTOCOL="${1:-semi}"
 MODEL_PRESET="${2:-mnist_3layer_20}"
 
 # ==================== Crown MPC data base path ====================
+# Docker 环境路径:  /usr/src/MP-SPDZ  运行SPDZ
+#                   /usr/src/crown/shark_sh/shark_crown_ml/crown_mpc_data  数据目录
+# 可通过环境变量 CROWN_DATA_BASE 覆盖
 CROWN_DATA_BASE="${CROWN_DATA_BASE:-/usr/src/crown/shark_sh/shark_crown_ml/crown_mpc_data}"
 
 # ==================== Model Configurations ====================
+# Format: num_layers hidden_dim input_dim output_dim data_folder_name
 declare -A CONFIGS
 
 # MNIST small models (hidden=20, input_dim=784)
@@ -95,27 +92,29 @@ TRUE_LABEL="${CROWN_TRUE_LABEL:-7}"
 TARGET_LABEL="${CROWN_TARGET_LABEL:-6}"
 IMAGE_ID="${CROWN_IMAGE_ID:-0}"
 
+# Scale eps for compile-time integer argument (eps * 100000)
+EPS_SCALED=$(python3 -c "print(int(${EPS} * 100000))")
+
 # Paths
 WEIGHTS_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/weights/weights.dat"
 INPUT_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/images/${IMAGE_ID}.bin"
 
 # ==================== Results directory (variant-specific) ====================
-RESULTS_BASE_DIR="crown-results/${MPC_VARIANT}/${PROTOCOL}/${MODEL_PRESET}/eps_${EPS}"
+RESULTS_BASE_DIR="crown-results/${PROTOCOL}/${MPC_VARIANT}/${MODEL_PRESET}/eps_${EPS}"
 mkdir -p "$RESULTS_BASE_DIR"
 
-# Result file naming: image_<id>_<protocol>.txt and summary
 RESULT_LOG="${RESULTS_BASE_DIR}/image_${IMAGE_ID}_${PROTOCOL}_log.txt"
 RESULT_SUMMARY="${RESULTS_BASE_DIR}/image_${IMAGE_ID}_${PROTOCOL}_summary.txt"
 
 echo "========================================"
-echo "CROWN Verification on MP-SPDZ (ReLU-based)"
+echo "CROWN Verification on MP-SPDZ (Element-wise)"
 echo "========================================"
 echo "MPC variant:  $MPC_VARIANT"
 echo "Protocol:     $PROTOCOL"
 echo "Model:        $MODEL_PRESET ($DATA_FOLDER)"
 echo "Layers:       $NUM_LAYERS"
 echo "Layer dims:   $LAYER_DIMS"
-echo "Eps:          $EPS"
+echo "Eps:          $EPS (scaled: $EPS_SCALED)"
 echo "True label:   $TRUE_LABEL"
 echo "Target label: $TARGET_LABEL"
 echo "Image ID:     $IMAGE_ID"
@@ -130,6 +129,8 @@ echo "[Step 1] Preparing input data..."
 
 if [ ! -f "$WEIGHTS_FILE" ]; then
     echo "ERROR: Weights file not found: $WEIGHTS_FILE"
+    echo "Please run the data conversion script first:"
+    echo "  cd /usr/src/crown/shark_sh/shark_crown_ml && python Convert-for-crown-mpc.py"
     exit 1
 fi
 
@@ -151,19 +152,19 @@ echo "Data preparation complete."
 
 # ==================== Step 2: Compile ====================
 echo ""
-echo "[Step 2] Compiling crown.mpc..."
+echo "[Step 2] Compiling crown_elemwise.mpc..."
 
-# No eps/labels in compile args (they are CLIENT secrets)
-COMPILE_ARGS="crown/crown $NUM_LAYERS $LAYER_DIMS"
+COMPILE_ARGS="${MPC_SOURCE} $NUM_LAYERS $LAYER_DIMS $EPS_SCALED $TRUE_LABEL $TARGET_LABEL"
 echo "Compile args: $COMPILE_ARGS"
 
 python3 ./compile.py $COMPILE_ARGS
 
-# Program name: crown/crown-<num_layers>-<d0>-...-<dN>
-PROGRAM_NAME="crown/crown-${NUM_LAYERS}"
+# The compiled program name includes the args
+PROGRAM_NAME="${MPC_SOURCE}-${NUM_LAYERS}"
 for d in $LAYER_DIMS; do
     PROGRAM_NAME="${PROGRAM_NAME}-${d}"
 done
+PROGRAM_NAME="${PROGRAM_NAME}-${EPS_SCALED}-${TRUE_LABEL}-${TARGET_LABEL}"
 
 echo "Compiled program: $PROGRAM_NAME"
 
@@ -214,7 +215,7 @@ case "$PROTOCOL" in
         ;;
     *)
         echo "ERROR: Unknown protocol '$PROTOCOL'"
-        echo "Available: emulate, semi, mascot, rep-field, shamir, mal-rep-field, semi2k, spdz2k, rep-ring, hemi, soho"
+        echo "Available: semi, mascot, rep-field, shamir, mal-rep-field, semi2k, spdz2k, rep-ring, hemi, soho"
         exit 1
         ;;
 esac
@@ -228,7 +229,7 @@ fi
 echo "Running: $SCRIPT $PROGRAM_NAME"
 echo "========================================"
 
-# Run and capture output (tee to both stdout and log file)
+# Run and capture output
 bash "$SCRIPT" "$PROGRAM_NAME" 2>&1 | tee "$RESULT_LOG"
 
 echo "========================================"
@@ -240,7 +241,7 @@ echo "[Step 4] Saving results..."
 
 {
     echo "============================================"
-    echo "CROWN Verification Summary (ReLU-based)"
+    echo "CROWN Verification Summary (Element-wise)"
     echo "============================================"
     echo "Date:         $(date '+%Y-%m-%d %H:%M:%S')"
     echo "MPC variant:  $MPC_VARIANT"
@@ -257,7 +258,7 @@ echo "[Step 4] Saving results..."
     echo "Protocol:     $PROTOCOL"
     echo "--------------------------------------------"
     echo "Computation Results:"
-    grep -E "MPC LB:|MPC UB:|Robust:" "$RESULT_LOG" 2>/dev/null || echo "  (no results found)"
+    grep -E "Lower Bound|Upper Bound|Robust:" "$RESULT_LOG" 2>/dev/null || echo "  (no results found)"
     echo "--------------------------------------------"
     echo "Performance:"
     grep -E "^Time =|^Data sent =|^Global data sent =" "$RESULT_LOG" 2>/dev/null || echo "  (no performance data)"

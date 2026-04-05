@@ -9,15 +9,15 @@ Player 0: model owner (provides weights, biases, and config metadata)
 Player 1: data owner (provides input image)
 
 Compile:
-    ./compile.py crown/crown <num_layers> <d0> <d1> ... <dN> <eps*100000> <true_label> <target_label>
+    ./compile.py crown/crown_elemwise <num_layers> <d0> <d1> ... <dN> <eps*100000> <true_label> <target_label>
 
 Example (3-layer MNIST, eps=0.03, true=7, target=6):
-    ./compile.py crown/crown 3 784 256 256 10 3000 7 6
+    ./compile.py crown/crown_elemwise 3 784 256 256 10 3000 7 6
 
 Run (pick any protocol):
-    Scripts/semi.sh crown/crown-3-784-256-256-10-3000-7-6
-    Scripts/mascot.sh crown/crown-3-784-256-256-10-3000-7-6
-    Scripts/rep-field.sh crown/crown-3-784-256-256-10-3000-7-6
+    Scripts/semi.sh crown/crown_elemwise-3-784-256-256-10-3000-7-6
+    Scripts/mascot.sh crown/crown_elemwise-3-784-256-256-10-3000-7-6
+    Scripts/rep-field.sh crown/crown_elemwise-3-784-256-256-10-3000-7-6
 
 Data preparation (must run before execution):
     python Programs/Source/crown/crown_prepare_data.py \\
@@ -36,7 +36,7 @@ program.options_from_args()
 
 # ==================== Parse compile-time arguments ====================
 if len(program.args) < 6:
-    print('Usage: compile.py crown <num_layers> <d0> ... <dN> <eps*100000> <true_label> <target_label>',
+    print('Usage: compile.py crown_elemwise <num_layers> <d0> ... <dN> <eps*100000> <true_label> <target_label>',
           file=sys.stderr)
     sys.exit(1)
 

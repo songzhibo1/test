@@ -1,21 +1,18 @@
 """
-CROWN Verification in MP-SPDZ (Sign-Split Optimized)
+CROWN Verification in MP-SPDZ
 
-Optimization over crown.mpc (relu-based):
-  - sign-split: one comparison (A > 0) produces both A_pos and A_neg
-  - relu(A) + relu(-A) needed 2 comparisons; sign-split needs only 1
-  - relu(-LB) computed once and shared between lb/ub corrections
-  - All operations remain matrix-level batched via @for_range_opt
+MPC implementation of CROWN neural network verification,
+matching the relu-based logic of crowntest.cpp.
 
 Player 0 (SERVER / model owner): weights, biases
 Player 1 (CLIENT / data owner):  x0, eps, diff_vec (secrets)
 
-Compile:
-    ./compile.py crown/crown_signsplit <num_layers> <d0> ... <dN>
+Compile (no eps/labels - those are CLIENT secrets):
+    ./compile.py crown/crown_batchrelu <num_layers> <d0> ... <dN>
 Example:
-    ./compile.py crown/crown_signsplit 3 784 20 20 10
+    ./compile.py crown/crown_batchrelu 3 784 20 20 10
 Run:
-    Scripts/semi.sh crown/crown_signsplit-3-784-20-20-10
+    Scripts/semi.sh crown/crown_batchrelu-3-784-20-20-10
 """
 
 program.use_trunc_pr = True
@@ -27,7 +24,7 @@ program.options_from_args()
 
 # ==================== Parse compile-time arguments ====================
 if len(program.args) < 3:
-    print('Usage: compile.py crown/crown_signsplit <num_layers> <d0> ... <dN>',
+    print('Usage: compile.py crown/crown_batchrelu <num_layers> <d0> ... <dN>',
           file=sys.stderr)
     sys.exit(1)
 
@@ -36,7 +33,7 @@ layer_dims = [int(program.args[2 + i]) for i in range(num_layers + 1)]
 input_dim = layer_dims[0]
 output_dim = layer_dims[-1]
 
-print(f"CROWN (sign-split): layers={num_layers}, dims={layer_dims}", file=sys.stderr)
+print(f"CROWN (batchrelu): layers={num_layers}, dims={layer_dims}", file=sys.stderr)
 
 # ==================== Precision ====================
 sfix.set_precision(16, 31)
@@ -69,7 +66,23 @@ def _(j):
 
 print_ln("Data loaded: %s layers, input_dim=%s", num_layers, input_dim)
 
-# ==================== Helper functions ====================
+# ==================== Helper functions (batched with @for_range_opt) ====================
+
+def array_relu(arr, size):
+    """Apply ReLU element-wise (batched)."""
+    result = sfix.Array(size)
+    @for_range_opt(size)
+    def _(i):
+        result[i] = (arr[i] > 0).if_else(arr[i], sfix(0))
+    return result
+
+def array_neg(arr, size):
+    """Negate each element."""
+    result = sfix.Array(size)
+    @for_range_opt(size)
+    def _(i):
+        result[i] = -arr[i]
+    return result
 
 def array_add(a, b, size):
     """Element-wise addition."""
@@ -77,6 +90,44 @@ def array_add(a, b, size):
     @for_range_opt(size)
     def _(i):
         result[i] = a[i] + b[i]
+    return result
+
+def mat_relu(M, rows, cols):
+    """Element-wise ReLU on matrix (batched)."""
+    result = sfix.Matrix(rows, cols)
+    @for_range_opt(rows)
+    def _(r):
+        @for_range_opt(cols)
+        def _(c, r=r):
+            result[r][c] = (M[r][c] > 0).if_else(M[r][c], sfix(0))
+    return result
+
+def mat_neg(M, rows, cols):
+    """Negate each element of a matrix."""
+    result = sfix.Matrix(rows, cols)
+    @for_range_opt(rows)
+    def _(r):
+        @for_range_opt(cols)
+        def _(c, r=r):
+            result[r][c] = -M[r][c]
+    return result
+
+def mat_abs(M, rows, cols):
+    """Element-wise absolute value: |x| = (x>0) ? x : -x. 1 comparison per element."""
+    result = sfix.Matrix(rows, cols)
+    @for_range_opt(rows)
+    def _(r):
+        @for_range_opt(cols)
+        def _(c, r=r):
+            result[r][c] = (M[r][c] > 0).if_else(M[r][c], -M[r][c])
+    return result
+
+def array_abs(arr, size):
+    """Element-wise absolute value on array. 1 comparison per element."""
+    result = sfix.Array(size)
+    @for_range_opt(size)
+    def _(i):
+        result[i] = (arr[i] > 0).if_else(arr[i], -arr[i])
     return result
 
 def mat_elemul(A, B, rows, cols):
@@ -111,84 +162,25 @@ def expand_vec_to_mat(v, rows, cols):
             result[r][c] = v[c]
     return result
 
-# ==================== Sign-split functions (core optimization) ====================
-
-def mat_sign_split(M, rows, cols):
-    """
-    Sign-split on matrix: ONE comparison per element produces both parts.
-    Returns (M_pos, M_neg) where:
-      M_pos[r][c] = M[r][c] if M[r][c] > 0 else 0    (= relu(M))
-      M_neg[r][c] = -M[r][c] if M[r][c] <= 0 else 0   (= relu(-M))
-    Comparisons: rows * cols (half of relu(M) + relu(-M))
-    """
-    M_pos = sfix.Matrix(rows, cols)
-    M_neg = sfix.Matrix(rows, cols)
-    @for_range_opt(rows)
-    def _(r):
-        @for_range_opt(cols)
-        def _(c, r=r):
-            bit = (M[r][c] > 0)
-            M_pos[r][c] = bit.if_else(M[r][c], sfix(0))
-            M_neg[r][c] = bit.if_else(sfix(0), -M[r][c])
-    return M_pos, M_neg
-
-def array_sign_split(arr, size):
-    """
-    Sign-split on array: ONE comparison per element produces both parts.
-    Returns (arr_pos, arr_neg) where:
-      arr_pos[i] = arr[i] if arr[i] > 0 else 0    (= relu(arr))
-      arr_neg[i] = -arr[i] if arr[i] <= 0 else 0   (= relu(-arr))
-    Comparisons: size (half of relu(arr) + relu(-arr))
-    """
-    arr_pos = sfix.Array(size)
-    arr_neg = sfix.Array(size)
-    @for_range_opt(size)
-    def _(i):
-        bit = (arr[i] > 0)
-        arr_pos[i] = bit.if_else(arr[i], sfix(0))
-        arr_neg[i] = bit.if_else(sfix(0), -arr[i])
-    return arr_pos, arr_neg
-
-def mat_abs_signsplit(M, rows, cols):
-    """
-    Absolute value via sign-split: |x| = pos + neg.
-    Same comparison count as if_else abs, but reuses the sign-split pattern.
-    """
-    M_pos, M_neg = mat_sign_split(M, rows, cols)
-    result = sfix.Matrix(rows, cols)
-    @for_range_opt(rows)
-    def _(r):
-        @for_range_opt(cols)
-        def _(c, r=r):
-            result[r][c] = M_pos[r][c] + M_neg[r][c]
-    return result
-
-def array_abs_signsplit(arr, size):
-    """Absolute value via sign-split for arrays."""
-    arr_pos, arr_neg = array_sign_split(arr, size)
-    result = sfix.Array(size)
-    @for_range_opt(size)
-    def _(i):
-        result[i] = arr_pos[i] + arr_neg[i]
-    return result
-
-# ==================== CROWN core (sign-split optimized) ====================
+# ==================== CROWN core (relu-based, matching crowntest.cpp) ====================
 
 def compute_alpha(UB, LB, dim):
     """
     alpha = relu(UB) / (relu(UB) + relu(-LB) + epsilon)
-    Uses sign-split to get relu(UB) and relu(-LB) efficiently.
-    Then clamp to [0, 1].
+    Then clamp to [0, 1]: min(alpha, 1) = 1 - relu(1 - alpha)
+    Matches crowntest.cpp compute_alpha_secure().
     """
     eps_small = sfix(0.000001)
-    UB_pos, _ = array_sign_split(UB, dim)   # relu(UB)
-    _, LB_neg = array_sign_split(LB, dim)   # relu(-LB)
+    num = array_relu(UB, dim)
+    LB_neg = array_neg(LB, dim)
+    term2 = array_relu(LB_neg, dim)
+    den = array_add(num, term2, dim)
 
     alpha = sfix.Array(dim)
     @for_range_opt(dim)
     def _(i):
-        den_safe = UB_pos[i] + LB_neg[i] + eps_small
-        alpha[i] = UB_pos[i] / den_safe
+        den_safe = den[i] + eps_small
+        alpha[i] = num[i] / den_safe
     # Clamp: min(alpha, 1) = 1 - relu(1 - alpha)
     @for_range_opt(dim)
     def _(i):
@@ -203,41 +195,40 @@ def scale_mat_by_alpha(W, alpha, rows, cols):
     return mat_elemul(W, alpha_mat, rows, cols)
 
 
-def compute_corrections_merged(A, LB, rows, cols):
+def compute_lb_correction_matrix(A, LB, rows, cols):
     """
-    Sign-split correction: ONE comparison per A element, ONE per LB element.
-    Produces both lb_corr and ub_corr simultaneously.
-
-    lb_corr[r] = sum_c relu(-A[r][c]) * relu(-LB[c])   (= A_neg * LB_neg)
-    ub_corr[r] = sum_c relu( A[r][c]) * relu(-LB[c])   (= A_pos * LB_neg)
-
-    Comparisons: rows*cols + cols  (vs 2*rows*cols + 2*cols in relu approach)
+    lb_correction[r] = sum_c relu(-A[r][c]) * relu(-LB[c])
+    Matches crowntest.cpp compute_lb_correction_matrix().
+    relu(-LB) is precomputed once, shared between lb and ub.
     """
-    # Sign-split A: 1 comparison per element -> A_pos, A_neg
-    A_pos, A_neg = mat_sign_split(A, rows, cols)
+    A_neg = mat_neg(A, rows, cols)
+    relu_neg_A = mat_relu(A_neg, rows, cols)
+    LB_neg = array_neg(LB, cols)
+    relu_neg_LB = array_relu(LB_neg, cols)
+    relu_neg_LB_mat = expand_vec_to_mat(relu_neg_LB, rows, cols)
+    prod = mat_elemul(relu_neg_A, relu_neg_LB_mat, rows, cols)
+    return mat_row_sum(prod, rows, cols)
 
-    # Sign-split LB: 1 comparison per element -> _, LB_neg (only need negative part)
-    _, LB_neg = array_sign_split(LB, cols)
 
-    # Expand LB_neg to matrix for batch element-wise multiply
-    LB_neg_mat = expand_vec_to_mat(LB_neg, rows, cols)
-
-    # lb_corr = row_sum(A_neg * LB_neg)  -- pure multiply, no comparison
-    prod_lb = mat_elemul(A_neg, LB_neg_mat, rows, cols)
-    lb_corr = mat_row_sum(prod_lb, rows, cols)
-
-    # ub_corr = row_sum(A_pos * LB_neg)  -- pure multiply, no comparison
-    prod_ub = mat_elemul(A_pos, LB_neg_mat, rows, cols)
-    ub_corr = mat_row_sum(prod_ub, rows, cols)
-
-    return lb_corr, ub_corr
+def compute_ub_correction_matrix(A, LB, rows, cols):
+    """
+    ub_correction[r] = sum_c relu(A[r][c]) * relu(-LB[c])
+    Matches crowntest.cpp compute_ub_correction_matrix().
+    """
+    relu_A = mat_relu(A, rows, cols)
+    LB_neg = array_neg(LB, cols)
+    relu_neg_LB = array_relu(LB_neg, cols)
+    relu_neg_LB_mat = expand_vec_to_mat(relu_neg_LB, rows, cols)
+    prod = mat_elemul(relu_A, relu_neg_LB_mat, rows, cols)
+    return mat_row_sum(prod, rows, cols)
 
 
 def get_first_layer_bounds(W, b, x0_arr, eps_val, out_dim, in_dim):
-    """Compute first layer pre-ReLU bounds using |W| via sign-split abs."""
+    """Compute first layer pre-ReLU bounds using |W| with 1-comparison abs."""
     Ax0 = W.dot(x0_arr)
 
-    W_abs = mat_abs_signsplit(W, out_dim, in_dim)
+    # dual norm = sum(|W|, axis=1) -- using mat_abs (1 comparison per element)
+    W_abs = mat_abs(W, out_dim, in_dim)
     dualnorm = mat_row_sum(W_abs, out_dim, in_dim)
 
     UB = sfix.Array(out_dim)
@@ -252,7 +243,7 @@ def get_first_layer_bounds(W, b, x0_arr, eps_val, out_dim, in_dim):
 
 
 def compute_middle_layer_bounds(layer_idx, W_list, b_list, bounds_list, dims):
-    """CROWN backward propagation for middle layers (sign-split optimized)."""
+    """CROWN backward propagation for middle layers."""
     out_dim = dims[layer_idx + 1]
     in_dim = dims[layer_idx]
 
@@ -279,8 +270,8 @@ def compute_middle_layer_bounds(layer_idx, W_list, b_list, bounds_list, dims):
 
         A = scale_mat_by_alpha(A, bounds_list[i][2], out_dim, prev_out)
 
-        # Sign-split merged correction: 1 call replaces 2 separate calls
-        lb_c, ub_c = compute_corrections_merged(A, bounds_list[i][1], out_dim, prev_out)
+        lb_c = compute_lb_correction_matrix(A, bounds_list[i][1], out_dim, prev_out)
+        ub_c = compute_ub_correction_matrix(A, bounds_list[i][1], out_dim, prev_out)
         lb_corr = array_add(lb_corr, lb_c, out_dim)
         ub_corr = array_add(ub_corr, ub_c, out_dim)
 
@@ -291,7 +282,8 @@ def compute_middle_layer_bounds(layer_idx, W_list, b_list, bounds_list, dims):
 
     Ax0 = A.dot(x0)
 
-    A_abs = mat_abs_signsplit(A, out_dim, input_dim)
+    # |A| using 1-comparison abs
+    A_abs = mat_abs(A, out_dim, input_dim)
     dualnorm = mat_row_sum(A_abs, out_dim, input_dim)
 
     UB = sfix.Array(out_dim)
@@ -308,7 +300,8 @@ def compute_middle_layer_bounds(layer_idx, W_list, b_list, bounds_list, dims):
 
 def compute_final_diff_bounds(W_list, b_list, bounds_list, dims, n_layers):
     """
-    Compute margin bounds using diff_vec from CLIENT (sign-split optimized).
+    Compute margin bounds using diff_vec from CLIENT.
+    diff_vec encodes true_label and target_label as secrets.
     """
     last = n_layers - 1
     last_out = dims[last + 1]
@@ -348,24 +341,23 @@ def compute_final_diff_bounds(W_list, b_list, bounds_list, dims, n_layers):
             A_scaled[k] = A_prop[k] * bounds_list[i][2][k]
         A_prop = A_scaled
 
-        # Sign-split A_prop: 1 comparison per element -> A_pos, A_neg
-        A_pos_arr, A_neg_arr = array_sign_split(A_prop, prev_out)
-
-        # Sign-split LB: 1 comparison per element -> _, LB_neg
-        _, LB_neg = array_sign_split(bounds_list[i][1], prev_out)
-
-        # lb correction: sum(A_neg * LB_neg)  -- pure multiply
+        # lb correction: sum relu(-A) * relu(-LB)
+        A_neg = array_neg(A_prop, prev_out)
+        relu_neg_A = array_relu(A_neg, prev_out)
+        LB_neg = array_neg(bounds_list[i][1], prev_out)
+        relu_neg_LB = array_relu(LB_neg, prev_out)
         lb_c = MemValue(sfix(0))
         @for_range_opt(prev_out)
         def _(k, lb_c=lb_c):
-            lb_c.iadd(A_neg_arr[k] * LB_neg[k])
+            lb_c.iadd(relu_neg_A[k] * relu_neg_LB[k])
         lb_corr_total.iadd(lb_c.read())
 
-        # ub correction: sum(A_pos * LB_neg)  -- pure multiply, reuses same LB_neg
+        # ub correction: sum relu(A) * relu(-LB) (reuse relu_neg_LB)
+        relu_A = array_relu(A_prop, prev_out)
         ub_c = MemValue(sfix(0))
         @for_range_opt(prev_out)
         def _(k, ub_c=ub_c):
-            ub_c.iadd(A_pos_arr[k] * LB_neg[k])
+            ub_c.iadd(relu_A[k] * relu_neg_LB[k])
         ub_corr_total.iadd(ub_c.read())
 
         # constants += dot(A_prop, b[i])
@@ -392,8 +384,8 @@ def compute_final_diff_bounds(W_list, b_list, bounds_list, dims, n_layers):
     def _(k):
         Ax0.iadd(A_prop[k] * x0[k])
 
-    # dualnorm via sign-split abs
-    A_abs_arr = array_abs_signsplit(A_prop, input_dim)
+    # dualnorm using 1-comparison abs
+    A_abs_arr = array_abs(A_prop, input_dim)
     dualnorm = MemValue(sfix(0))
     @for_range_opt(input_dim)
     def _(k):
@@ -411,7 +403,7 @@ def compute_final_diff_bounds(W_list, b_list, bounds_list, dims, n_layers):
 # ==================== Main computation ====================
 
 print_ln("============================================")
-print_ln("CROWN Verification (MP-SPDZ, Sign-Split)")
+print_ln("CROWN Verification (MP-SPDZ)")
 print_ln("  %s layers, dims=%s", num_layers, str(layer_dims))
 print_ln("  eps, true_label, target_label: CLIENT secrets")
 print_ln("============================================")
@@ -439,7 +431,7 @@ final_LB, final_UB = compute_final_diff_bounds(weights, biases, bounds_list,
 # ==================== Output ====================
 print_ln("")
 print_ln("============================================")
-print_ln("CROWN Results (Sign-Split)")
+print_ln("CROWN Results")
 print_ln("============================================")
 print_ln("  MODEL: %s layers, dims=%s", num_layers, str(layer_dims))
 print_ln("  EPS: %s", eps_secret.reveal())
