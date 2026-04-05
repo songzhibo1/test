@@ -92,9 +92,6 @@ TRUE_LABEL="${CROWN_TRUE_LABEL:-7}"
 TARGET_LABEL="${CROWN_TARGET_LABEL:-6}"
 IMAGE_ID="${CROWN_IMAGE_ID:-0}"
 
-# Scale eps for compile-time integer argument (eps * 100000)
-EPS_SCALED=$(python3 -c "print(int(${EPS} * 100000))")
-
 # Paths
 WEIGHTS_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/weights/weights.dat"
 INPUT_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/images/${IMAGE_ID}.bin"
@@ -114,7 +111,7 @@ echo "Protocol:     $PROTOCOL"
 echo "Model:        $MODEL_PRESET ($DATA_FOLDER)"
 echo "Layers:       $NUM_LAYERS"
 echo "Layer dims:   $LAYER_DIMS"
-echo "Eps:          $EPS (scaled: $EPS_SCALED)"
+echo "Eps:          $EPS"
 echo "True label:   $TRUE_LABEL"
 echo "Target label: $TARGET_LABEL"
 echo "Image ID:     $IMAGE_ID"
@@ -129,8 +126,6 @@ echo "[Step 1] Preparing input data..."
 
 if [ ! -f "$WEIGHTS_FILE" ]; then
     echo "ERROR: Weights file not found: $WEIGHTS_FILE"
-    echo "Please run the data conversion script first:"
-    echo "  cd /usr/src/crown/shark_sh/shark_crown_ml && python Convert-for-crown-mpc.py"
     exit 1
 fi
 
@@ -154,17 +149,17 @@ echo "Data preparation complete."
 echo ""
 echo "[Step 2] Compiling crown_elemwise.mpc..."
 
-COMPILE_ARGS="${MPC_SOURCE} $NUM_LAYERS $LAYER_DIMS $EPS_SCALED $TRUE_LABEL $TARGET_LABEL"
+# No eps/labels in compile args (they are CLIENT secrets)
+COMPILE_ARGS="${MPC_SOURCE} $NUM_LAYERS $LAYER_DIMS"
 echo "Compile args: $COMPILE_ARGS"
 
 python3 ./compile.py $COMPILE_ARGS
 
-# The compiled program name includes the args
+# Program name: crown/crown_elemwise-<num_layers>-<d0>-...-<dN>
 PROGRAM_NAME="${MPC_SOURCE}-${NUM_LAYERS}"
 for d in $LAYER_DIMS; do
     PROGRAM_NAME="${PROGRAM_NAME}-${d}"
 done
-PROGRAM_NAME="${PROGRAM_NAME}-${EPS_SCALED}-${TRUE_LABEL}-${TARGET_LABEL}"
 
 echo "Compiled program: $PROGRAM_NAME"
 
@@ -259,7 +254,7 @@ echo "[Step 4] Saving results..."
     echo "Protocol:     $PROTOCOL"
     echo "--------------------------------------------"
     echo "Computation Results:"
-    grep -E "Lower Bound|Upper Bound|Robust:" "$RESULT_LOG" 2>/dev/null || echo "  (no results found)"
+    grep -E "MPC LB:|MPC UB:|Robust:" "$RESULT_LOG" 2>/dev/null || echo "  (no results found)"
     echo "--------------------------------------------"
     echo "Performance (Total):"
     grep -E "^Time =|^Data sent =|^Global data sent =" "$RESULT_LOG" 2>/dev/null || echo "  (no performance data)"
