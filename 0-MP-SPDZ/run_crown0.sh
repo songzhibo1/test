@@ -149,7 +149,7 @@ echo "Compile args: $COMPILE_ARGS"
 python3 ./compile.py  $COMPILE_ARGS
 
 # The compiled program name includes the args
-PROGRAM_NAME="crown/crown-${NUM_LAYERS}"
+PROGRAM_NAME="crown/crown0-${NUM_LAYERS}"
 for d in $LAYER_DIMS; do
     PROGRAM_NAME="${PROGRAM_NAME}-${d}"
 done
