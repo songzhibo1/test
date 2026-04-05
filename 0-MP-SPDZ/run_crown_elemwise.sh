@@ -28,6 +28,18 @@ MPC_SOURCE="crown/crown_elemwise"
 # Default protocol
 PROTOCOL="${1:-semi}"
 
+# Online-only mode detection: *-online suffix (e.g. semi-online)
+ONLINE_ONLY=false
+EXTRA_FLAGS=""
+PROTOCOL_DIR="$PROTOCOL"
+if [[ "$PROTOCOL" == *-online ]]; then
+    ONLINE_ONLY=true
+    BASE_PROTOCOL="${PROTOCOL%-online}"
+    PROTOCOL_DIR="${PROTOCOL}"  # e.g. "semi-online" for results directory
+    EXTRA_FLAGS="-F"
+    echo ">>> Online-only mode: will use fake preprocessing + -F flag"
+fi
+
 # Model configuration presets
 MODEL_PRESET="${2:-mnist_3layer_20}"
 
@@ -97,7 +109,7 @@ WEIGHTS_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/weights/weights.dat"
 INPUT_FILE="${CROWN_DATA_BASE}/${DATA_FOLDER}/images/${IMAGE_ID}.bin"
 
 # ==================== Results directory (variant-specific) ====================
-RESULTS_BASE_DIR="crown-results/${PROTOCOL}/${MPC_VARIANT}/${MODEL_PRESET}/eps_${EPS}"
+RESULTS_BASE_DIR="crown-results/${PROTOCOL_DIR}/${MPC_VARIANT}/${MODEL_PRESET}/eps_${EPS}"
 mkdir -p "$RESULTS_BASE_DIR"
 
 RESULT_LOG="${RESULTS_BASE_DIR}/image_${IMAGE_ID}_${PROTOCOL}_log.txt"
@@ -167,8 +179,14 @@ echo "Compiled program: $PROGRAM_NAME"
 echo ""
 echo "[Step 3] Running with protocol: $PROTOCOL"
 
+# For online-only mode, resolve the base protocol name
+PROTO_LOOKUP="$PROTOCOL"
+if [ "$ONLINE_ONLY" = true ]; then
+    PROTO_LOOKUP="$BASE_PROTOCOL"
+fi
+
 # Map protocol names to scripts
-case "$PROTOCOL" in
+case "$PROTO_LOOKUP" in
     emulate|emu)
         SCRIPT="Scripts/emulate.sh"
         ;;
@@ -209,8 +227,9 @@ case "$PROTOCOL" in
         SCRIPT="Scripts/soho.sh"
         ;;
     *)
-        echo "ERROR: Unknown protocol '$PROTOCOL'"
-        echo "Available: semi, mascot, rep-field, shamir, mal-rep-field, semi2k, spdz2k, rep-ring, hemi, soho"
+        echo "ERROR: Unknown protocol '$PROTO_LOOKUP'"
+        echo "Available: emulate, semi, mascot, rep-field, shamir, mal-rep-field, semi2k, spdz2k, rep-ring, hemi, soho"
+        echo "Append '-online' for online-only mode (e.g. semi-online)"
         exit 1
         ;;
 esac
@@ -221,12 +240,28 @@ if [ ! -f "$SCRIPT" ]; then
     exit 1
 fi
 
-echo "Running: $SCRIPT $PROGRAM_NAME"
+# ==================== Step 2.5: Generate fake preprocessing (online-only mode) ====================
+if [ "$ONLINE_ONLY" = true ]; then
+    echo ""
+    echo "[Step 2.5] Generating fake preprocessing for online-only mode..."
+    FAKE_PREP_SIZE="${FAKE_PREP_SIZE:-100000000}"
+    echo "  Fake preprocessing size: $FAKE_PREP_SIZE (set FAKE_PREP_SIZE to adjust)"
+    if [ -f "./Fake-Offline.x" ]; then
+        ./Fake-Offline.x 2 --default "$FAKE_PREP_SIZE" 2>&1 | tail -5
+        echo "  Fake preprocessing generated."
+    else
+        echo "WARNING: Fake-Offline.x not found. Attempting to run without it..."
+        echo "  If the run fails with 'insufficient preprocessing', build Fake-Offline.x first:"
+        echo "    make Fake-Offline.x"
+    fi
+fi
+
+echo "Running: $SCRIPT $PROGRAM_NAME $EXTRA_FLAGS"
 echo "========================================"
 
 # Run and capture output
 # Run with -v for offline/online phase breakdown
-bash "$SCRIPT" "$PROGRAM_NAME" -v 2>&1 | tee "$RESULT_LOG"
+bash "$SCRIPT" "$PROGRAM_NAME" -v $EXTRA_FLAGS 2>&1 | tee "$RESULT_LOG"
 
 echo "========================================"
 echo "Done!"
@@ -251,7 +286,7 @@ echo "[Step 4] Saving results..."
     echo "True label:   $TRUE_LABEL"
     echo "Target label: $TARGET_LABEL"
     echo "Image ID:     $IMAGE_ID"
-    echo "Protocol:     $PROTOCOL"
+    echo "Protocol:     $PROTOCOL_DIR"
     echo "--------------------------------------------"
     echo "Computation Results:"
     grep -E "MPC LB:|MPC UB:|Robust:" "$RESULT_LOG" 2>/dev/null || echo "  (no results found)"
