@@ -228,8 +228,8 @@ fi
 echo "Running: $SCRIPT $PROGRAM_NAME"
 echo "========================================"
 
-# Run and capture output (tee to both stdout and log file)
-bash "$SCRIPT" "$PROGRAM_NAME" 2>&1 | tee "$RESULT_LOG"
+# Run with -v for offline/online phase breakdown
+bash "$SCRIPT" "$PROGRAM_NAME" -v 2>&1 | tee "$RESULT_LOG"
 
 echo "========================================"
 echo "Done!"
@@ -259,8 +259,11 @@ echo "[Step 4] Saving results..."
     echo "Computation Results:"
     grep -E "MPC LB:|MPC UB:|Robust:" "$RESULT_LOG" 2>/dev/null || echo "  (no results found)"
     echo "--------------------------------------------"
-    echo "Performance:"
+    echo "Performance (Total):"
     grep -E "^Time =|^Data sent =|^Global data sent =" "$RESULT_LOG" 2>/dev/null || echo "  (no performance data)"
+    echo "--------------------------------------------"
+    echo "Phase Breakdown (with -v):"
+    grep -iE "online phase|offline phase|preprocessing" "$RESULT_LOG" 2>/dev/null || echo "  (no phase breakdown available)"
     echo "============================================"
 } > "$RESULT_SUMMARY"
 
