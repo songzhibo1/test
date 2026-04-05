@@ -254,8 +254,12 @@ echo "[Step 4] Saving results..."
     echo "Performance (Total):"
     grep -E "^Time =|^Data sent =|^Global data sent =" "$RESULT_LOG" 2>/dev/null || echo "  (no performance data)"
     echo "--------------------------------------------"
-    echo "Phase Breakdown (with -v):"
-    grep -iE "online phase|offline phase|preprocessing" "$RESULT_LOG" 2>/dev/null || echo "  (no phase breakdown available)"
+    echo "Phase Breakdown:"
+    grep -E "ANDs in preprocessing" "$RESULT_LOG" 2>/dev/null | head -1
+    grep -E "^Spent .* on the online phase" "$RESULT_LOG" 2>/dev/null | head -1
+    if ! grep -qE "^Spent .* on the online phase" "$RESULT_LOG" 2>/dev/null; then
+        echo "  (no phase breakdown available - run with -v)"
+    fi
     echo "============================================"
 } > "$RESULT_SUMMARY"
 
