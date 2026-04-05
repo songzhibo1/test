@@ -56,15 +56,7 @@ sfix.set_precision(16, 31)
 
 # ==================== Load data from players ====================
 
-# Player 0: metadata + weights/biases
-# Skip metadata fields written by crown_prepare_data.py
-_skip = sfix.get_input_from(0)  # num_layers
-for _ in range(num_layers + 1):
-    _skip = sfix.get_input_from(0)  # layer_dims
-_skip = sfix.get_input_from(0)  # eps
-_skip = sfix.get_input_from(0)  # true_label
-_skip = sfix.get_input_from(0)  # target_label
-
+# Player 0: weights and biases (no metadata - those are compile-time args)
 # Read weights and biases
 weights = []
 biases = []
