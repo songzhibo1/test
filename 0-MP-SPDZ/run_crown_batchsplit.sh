@@ -241,9 +241,13 @@ if [ "$ONLINE_ONLY" = true ]; then
     echo "[Step 2.5] Generating fake preprocessing for online-only mode..."
     FAKE_PREP_SIZE="${FAKE_PREP_SIZE:-100000000}"
     echo "  Fake preprocessing size: $FAKE_PREP_SIZE (set FAKE_PREP_SIZE to adjust)"
+    echo "  Program: $PROGRAM_NAME (used for edaBit length detection)"
     if [ -f "./Fake-Offline.x" ]; then
-        ./Fake-Offline.x 2 --default "$FAKE_PREP_SIZE" 2>&1 | tail -5
-        echo "  Fake preprocessing generated."
+        # --program reads compiled bytecode to auto-detect edaBit lengths and all
+        # other preprocessing requirements (triples, bits, inputs, etc.)
+        # --default N sets the count for types not specified by --program
+        ./Fake-Offline.x 2 --default "$FAKE_PREP_SIZE" --program "$PROGRAM_NAME" 2>&1 | tail -10
+        echo "  Fake preprocessing generated (with correct edaBit lengths)."
     else
         echo "WARNING: Fake-Offline.x not found. Attempting to run without it..."
         echo "  If the run fails with 'insufficient preprocessing', build Fake-Offline.x first:"

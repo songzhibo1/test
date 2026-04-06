@@ -39,7 +39,7 @@ output_dim = layer_dims[-1]
 print(f"CROWN (batchsplit): layers={num_layers}, dims={layer_dims}", file=sys.stderr)
 
 # ==================== Precision ====================
-sfix.set_precision(16, 31)
+sfix.set_precision(24, 56)
 
 # ==================== Load data ====================
 
