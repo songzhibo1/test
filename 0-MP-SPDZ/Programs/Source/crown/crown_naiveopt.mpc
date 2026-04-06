@@ -1,0 +1,498 @@
+"""
+CROWN Verification in MP-SPDZ (Naive Half-Opt)
+
+Hybrid version: only the core CROWN backward pass (Part 2) stays naive
+(@for_range, no batching), all other parts use @for_range_opt.
+
+  Part 1 (opt):   Initial layer bounds -- input layer vectorization
+  Part 2 (naive): Core CROWN backward  -- nonlinear logic (states, alpha, corrections)
+  Part 3 (opt):   Last-layer W_diff/b_diff extraction
+  Part 4 (opt):   Final backward pass + dualnorm assembly
+
+Secret protection (same as all other variants):
+  Player 0 (SERVER / model owner): weights, biases
+  Player 1 (CLIENT / data owner):  x0, eps, diff_vec (all secrets)
+
+Compile:
+    ./compile.py crown/crown_naiveopt <num_layers> <d0> ... <dN>
+Example:
+    ./compile.py crown/crown_naiveopt 3 784 20 20 10
+Run:
+    Scripts/semi.sh crown/crown_naiveopt-3-784-20-20-10
+"""
+
+program.use_trunc_pr = True
+program.use_edabit(True)
+
+import sys
+
+program.options_from_args()
+
+# ==================== Parse compile-time arguments ====================
+if len(program.args) < 3:
+    print('Usage: compile.py crown/crown_naiveopt <num_layers> <d0> ... <dN>',
+          file=sys.stderr)
+    sys.exit(1)
+
+num_layers = int(program.args[1])
+layer_dims = [int(program.args[2 + i]) for i in range(num_layers + 1)]
+input_dim = layer_dims[0]
+output_dim = layer_dims[-1]
+
+print(f"CROWN (naiveopt): layers={num_layers}, dims={layer_dims}", file=sys.stderr)
+
+# ==================== Precision ====================
+sfix.set_precision(24, 56)
+
+# ==================== Load data ====================
+
+# Player 0 (SERVER): weights and biases
+weights = []
+biases = []
+for i in range(num_layers):
+    in_dim = layer_dims[i]
+    out_dim = layer_dims[i + 1]
+    W = sfix.Matrix(out_dim, in_dim)
+    b = sfix.Array(out_dim)
+    W.input_from(0)
+    b.input_from(0)
+    weights.append(W)
+    biases.append(b)
+
+# Player 1 (CLIENT): x0, eps, diff_vec (all secrets)
+x0 = sfix.Array(input_dim)
+x0.input_from(1)
+
+eps_secret = sfix.get_input_from(1)  # perturbation radius (secret)
+
+diff_vec = sfix.Array(output_dim)
+@for_range_opt(output_dim)
+def _(j):
+    diff_vec[j] = sfix.get_input_from(1)
+
+print_ln("Data loaded: %s layers, input_dim=%s", num_layers, input_dim)
+
+# ============================================================================
+# Helper functions -- OPT versions (used by Parts 1, 3, 4)
+# ============================================================================
+
+def mat_abs_opt(M, rows, cols):
+    """Element-wise |x| on matrix. @for_range_opt."""
+    result = sfix.Matrix(rows, cols)
+    @for_range_opt(rows)
+    def _(r):
+        @for_range_opt(cols)
+        def _(c, r=r):
+            result[r][c] = (M[r][c] > 0).if_else(M[r][c], -M[r][c])
+    return result
+
+def array_abs_opt(arr, size):
+    """Element-wise |x| on array. @for_range_opt."""
+    result = sfix.Array(size)
+    @for_range_opt(size)
+    def _(i):
+        result[i] = (arr[i] > 0).if_else(arr[i], -arr[i])
+    return result
+
+def mat_row_sum_opt(M, rows, cols):
+    """Sum each row of matrix. @for_range_opt."""
+    result = sfix.Array(rows)
+    @for_range_opt(rows)
+    def _(r):
+        s = MemValue(sfix(0))
+        @for_range_opt(cols)
+        def _(c, s=s):
+            s.iadd(M[r][c])
+        result[r] = s.read()
+    return result
+
+def array_add_opt(a, b, size):
+    """Element-wise addition. @for_range_opt."""
+    result = sfix.Array(size)
+    @for_range_opt(size)
+    def _(i):
+        result[i] = a[i] + b[i]
+    return result
+
+# ============================================================================
+# Helper functions -- NAIVE versions (used by Part 2 only)
+# ============================================================================
+
+def mat_abs_naive(M, rows, cols):
+    """Element-wise |x| on matrix. @for_range (naive)."""
+    result = sfix.Matrix(rows, cols)
+    @for_range(rows)
+    def _(r):
+        @for_range(cols)
+        def _(c, r=r):
+            result[r][c] = (M[r][c] > 0).if_else(M[r][c], -M[r][c])
+    return result
+
+def mat_row_sum_naive(M, rows, cols):
+    """Sum each row. @for_range (naive)."""
+    result = sfix.Array(rows)
+    @for_range(rows)
+    def _(r):
+        s = MemValue(sfix(0))
+        @for_range(cols)
+        def _(c, s=s):
+            s.iadd(M[r][c])
+        result[r] = s.read()
+    return result
+
+def array_add_naive(a, b, size):
+    """Element-wise addition. @for_range (naive)."""
+    result = sfix.Array(size)
+    @for_range(size)
+    def _(i):
+        result[i] = a[i] + b[i]
+    return result
+
+def expand_vec_to_mat_naive(v, rows, cols):
+    """Broadcast vector to matrix. @for_range (naive)."""
+    result = sfix.Matrix(rows, cols)
+    @for_range(rows)
+    def _(r):
+        @for_range(cols)
+        def _(c, r=r):
+            result[r][c] = v[c]
+    return result
+
+def mat_elemul_naive(A, B, rows, cols):
+    """Element-wise multiplication. @for_range (naive)."""
+    result = sfix.Matrix(rows, cols)
+    @for_range(rows)
+    def _(r):
+        @for_range(cols)
+        def _(c, r=r):
+            result[r][c] = A[r][c] * B[r][c]
+    return result
+
+
+# ============================================================================
+# Part 2: Core CROWN backward -- ALL NAIVE (@for_range, no batching)
+# ============================================================================
+
+def get_neuron_states(UB, LB, dim):
+    """
+    Classify neurons into 3 states using explicit comparisons.
+    NAIVE: @for_range (no batching).
+    """
+    is_active = sfix.Array(dim)
+    is_inactive = sfix.Array(dim)
+    is_unstable = sfix.Array(dim)
+    @for_range(dim)
+    def _(i):
+        lb_pos = (LB[i] > 0)
+        ub_neg = (UB[i] <= 0)
+        act = lb_pos
+        inact = (sfix(1) - lb_pos) * ub_neg
+        unst = sfix(1) - act - inact
+        is_active[i] = act
+        is_inactive[i] = inact
+        is_unstable[i] = unst
+    return is_active, is_inactive, is_unstable
+
+
+def compute_alpha_naive(UB, LB, is_active, is_unstable, dim):
+    """
+    Compute relaxation slope alpha per neuron state.
+    NAIVE: @for_range (no batching).
+    """
+    eps_small = sfix(0.000001)
+    alpha = sfix.Array(dim)
+    @for_range(dim)
+    def _(i):
+        denom = UB[i] - LB[i] + eps_small
+        alpha_unstable = UB[i] / denom
+        alpha[i] = is_active[i] * sfix(1) + is_unstable[i] * alpha_unstable
+    return alpha
+
+
+def scale_mat_by_alpha_naive(W, alpha, rows, cols):
+    """Column-wise scaling. NAIVE: @for_range (no batching)."""
+    alpha_mat = expand_vec_to_mat_naive(alpha, rows, cols)
+    return mat_elemul_naive(W, alpha_mat, rows, cols)
+
+
+def compute_corrections_naive(A, LB, is_unstable, rows, cols):
+    """
+    Compute correction terms using per-element sign checks on A.
+    NAIVE: @for_range (no batching).
+    """
+    lb_corr = sfix.Array(rows)
+    ub_corr = sfix.Array(rows)
+    lb_corr.assign_all(0)
+    ub_corr.assign_all(0)
+
+    @for_range(rows)
+    def _(r):
+        lb_sum = MemValue(sfix(0))
+        ub_sum = MemValue(sfix(0))
+        @for_range(cols)
+        def _(c, lb_sum=lb_sum, ub_sum=ub_sum, r=r):
+            correction_val = -A[r][c] * LB[c] * is_unstable[c]
+            is_pos = (A[r][c] > 0)
+            ub_sum.iadd(is_pos.if_else(correction_val, sfix(0)))
+            lb_sum.iadd(is_pos.if_else(sfix(0), correction_val))
+
+        lb_corr[r] = lb_sum.read()
+        ub_corr[r] = ub_sum.read()
+
+    return lb_corr, ub_corr
+
+
+def compute_middle_layer_bounds(layer_idx, W_list, b_list, bounds_list, dims):
+    """
+    CROWN backward propagation for middle layers.
+    Part 2 -- ALL NAIVE: @for_range throughout.
+    """
+    out_dim = dims[layer_idx + 1]
+    in_dim = dims[layer_idx]
+
+    # Initialize A = W[layer_idx]  (naive)
+    A = sfix.Matrix(out_dim, in_dim)
+    @for_range(out_dim)
+    def _(r):
+        @for_range(in_dim)
+        def _(c, r=r):
+            A[r][c] = W_list[layer_idx][r][c]
+
+    # Initialize constants = b[layer_idx]  (naive)
+    constants = sfix.Array(out_dim)
+    @for_range(out_dim)
+    def _(i):
+        constants[i] = b_list[layer_idx][i]
+
+    lb_corr = sfix.Array(out_dim)
+    ub_corr = sfix.Array(out_dim)
+    lb_corr.assign_all(0)
+    ub_corr.assign_all(0)
+
+    # Backward from layer_idx-1 down to 0
+    for i in range(layer_idx - 1, -1, -1):
+        prev_out = dims[i + 1]
+        prev_in = dims[i]
+
+        # Scale A by alpha[i]  (naive)
+        alpha = bounds_list[i][2]
+        A = scale_mat_by_alpha_naive(A, alpha, out_dim, prev_out)
+
+        # Corrections using if/else sign checks  (naive)
+        is_unst = bounds_list[i][5]
+        lb_c, ub_c = compute_corrections_naive(A, bounds_list[i][1], is_unst, out_dim, prev_out)
+        lb_corr = array_add_naive(lb_corr, lb_c, out_dim)
+        ub_corr = array_add_naive(ub_corr, ub_c, out_dim)
+
+        # constants += A @ b[i]
+        Ab = A.dot(b_list[i])
+        constants = array_add_naive(constants, Ab, out_dim)
+
+        # A = A @ W[i]
+        A = A.dot(W_list[i])
+
+    # Final: Ax0, dualnorm, radius  (naive)
+    Ax0 = A.dot(x0)
+
+    A_abs = mat_abs_naive(A, out_dim, input_dim)
+    dualnorm = mat_row_sum_naive(A_abs, out_dim, input_dim)
+
+    UB = sfix.Array(out_dim)
+    LB = sfix.Array(out_dim)
+    @for_range(out_dim)
+    def _(i):
+        base = Ax0[i] + constants[i]
+        radius = eps_secret * dualnorm[i]
+        UB[i] = base + ub_corr[i] + radius
+        LB[i] = base + lb_corr[i] - radius
+
+    return UB, LB
+
+
+# ============================================================================
+# Part 1: Initial layer bounds -- OPT (@for_range_opt)
+# ============================================================================
+
+def get_first_layer_bounds(W, b, x0_arr, eps_val, out_dim, in_dim):
+    """
+    Compute first layer pre-ReLU bounds.
+    Part 1 -- OPT: uses @for_range_opt for vectorized computation.
+    """
+    Ax0 = W.dot(x0_arr)
+
+    # dual norm = row-wise L1 norm of W  (opt)
+    W_abs = mat_abs_opt(W, out_dim, in_dim)
+    dualnorm = mat_row_sum_opt(W_abs, out_dim, in_dim)
+
+    UB = sfix.Array(out_dim)
+    LB = sfix.Array(out_dim)
+    @for_range_opt(out_dim)
+    def _(i):
+        radius = eps_val * dualnorm[i]
+        UB[i] = Ax0[i] + radius + b[i]
+        LB[i] = Ax0[i] - radius + b[i]
+
+    return UB, LB
+
+
+# ============================================================================
+# Parts 3+4: Final diff bounds -- OPT (@for_range_opt)
+# ============================================================================
+
+def compute_final_diff_bounds(W_list, b_list, bounds_list, dims, n_layers):
+    """
+    Compute margin bounds: f_true - f_target.
+    Part 3 (W_diff/b_diff extraction) + Part 4 (backward + assembly)
+    -- ALL OPT: uses @for_range_opt throughout.
+    """
+    last = n_layers - 1
+    last_out = dims[last + 1]
+    last_in = dims[last]
+
+    # ---- Part 3: W_diff/b_diff extraction (opt) ----
+
+    # W_diff = W_last^T @ diff_vec  (result is 1D, length last_in)
+    W_diff = sfix.Array(last_in)
+    @for_range_opt(last_in)
+    def _(i):
+        s = MemValue(sfix(0))
+        @for_range_opt(last_out)
+        def _(j, s=s, i=i):
+            s.iadd(W_list[last][j][i] * diff_vec[j])
+        W_diff[i] = s.read()
+
+    # b_diff = dot(b_last, diff_vec)  (scalar)
+    b_diff = MemValue(sfix(0))
+    @for_range_opt(last_out)
+    def _(j):
+        b_diff.iadd(b_list[last][j] * diff_vec[j])
+
+    # ---- Part 4: Final backward pass + assembly (opt) ----
+
+    constants = MemValue(b_diff.read())
+    lb_corr_total = MemValue(sfix(0))
+    ub_corr_total = MemValue(sfix(0))
+
+    # A_prop starts as W_diff (1D vector)
+    A_prop = sfix.Array(last_in)
+    A_prop.assign(W_diff)
+
+    # Backward from last-1 down to 0
+    for i in range(last - 1, -1, -1):
+        prev_out = dims[i + 1]
+        prev_in = dims[i]
+
+        # Scale A_prop by alpha[i]  (opt)
+        alpha = bounds_list[i][2]
+        A_scaled = sfix.Array(prev_out)
+        @for_range_opt(prev_out)
+        def _(k, i=i):
+            A_scaled[k] = A_prop[k] * alpha[k]
+        A_prop = A_scaled
+
+        # Corrections: per-element sign check  (opt)
+        is_unst = bounds_list[i][5]
+        LB_layer = bounds_list[i][1]
+
+        lb_c = MemValue(sfix(0))
+        ub_c = MemValue(sfix(0))
+        @for_range_opt(prev_out)
+        def _(k, lb_c=lb_c, ub_c=ub_c):
+            correction_val = -A_prop[k] * LB_layer[k] * is_unst[k]
+            is_pos = (A_prop[k] > 0)
+            ub_c.iadd(is_pos.if_else(correction_val, sfix(0)))
+            lb_c.iadd(is_pos.if_else(sfix(0), correction_val))
+
+        lb_corr_total.iadd(lb_c.read())
+        ub_corr_total.iadd(ub_c.read())
+
+        # constants += dot(A_prop, b[i])  (opt)
+        dot_Ab = MemValue(sfix(0))
+        @for_range_opt(prev_out)
+        def _(k, dot_Ab=dot_Ab, i=i):
+            dot_Ab.iadd(A_prop[k] * b_list[i][k])
+        constants.iadd(dot_Ab.read())
+
+        # A_prop = A_prop @ W[i]  (matrix-vector product, opt)
+        A_next = sfix.Array(prev_in)
+        @for_range_opt(prev_in)
+        def _(c, i=i):
+            s = MemValue(sfix(0))
+            @for_range_opt(prev_out)
+            def _(k, s=s, c=c):
+                s.iadd(A_prop[k] * W_list[i][k][c])
+            A_next[c] = s.read()
+        A_prop = A_next
+
+    # Ax0 = dot(A_prop, x0)  (opt)
+    Ax0 = MemValue(sfix(0))
+    @for_range_opt(input_dim)
+    def _(k):
+        Ax0.iadd(A_prop[k] * x0[k])
+
+    # dualnorm = sum(|A_prop|)  (opt)
+    A_abs_arr = array_abs_opt(A_prop, input_dim)
+    dualnorm = MemValue(sfix(0))
+    @for_range_opt(input_dim)
+    def _(k):
+        dualnorm.iadd(A_abs_arr[k])
+
+    radius = eps_secret * dualnorm.read()
+    base = Ax0.read() + constants.read()
+
+    final_UB = base + ub_corr_total.read() + radius
+    final_LB = base + lb_corr_total.read() - radius
+
+    return final_LB, final_UB
+
+
+# ==================== Main computation ====================
+
+print_ln("============================================")
+print_ln("CROWN Verification (MP-SPDZ) - NAIVE HALF-OPT")
+print_ln("  %s layers, dims=%s", num_layers, str(layer_dims))
+print_ln("  Part 1 (first layer):  @for_range_opt")
+print_ln("  Part 2 (CROWN back):   @for_range (naive)")
+print_ln("  Part 3+4 (final diff): @for_range_opt")
+print_ln("  eps, true_label, target_label: CLIENT secrets")
+print_ln("============================================")
+
+# Part 1: Layer 0 bounds (opt)
+print_ln("Computing Layer 0 bounds (opt)...")
+UB0, LB0 = get_first_layer_bounds(weights[0], biases[0], x0, eps_secret,
+                                   layer_dims[1], layer_dims[0])
+
+# Part 2: Neuron states + alpha (naive)
+is_act0, is_inact0, is_unst0 = get_neuron_states(UB0, LB0, layer_dims[1])
+alpha0 = compute_alpha_naive(UB0, LB0, is_act0, is_unst0, layer_dims[1])
+# bounds_list[i] = (UB, LB, alpha, is_active, is_inactive, is_unstable)
+bounds_list = [(UB0, LB0, alpha0, is_act0, is_inact0, is_unst0)]
+
+# Part 2: Middle layers (naive)
+for layer in range(1, num_layers - 1):
+    print_ln("Computing Layer %s bounds (naive)...", layer)
+    UB_l, LB_l = compute_middle_layer_bounds(layer, weights, biases,
+                                              bounds_list, layer_dims)
+    is_act_l, is_inact_l, is_unst_l = get_neuron_states(UB_l, LB_l, layer_dims[layer + 1])
+    alpha_l = compute_alpha_naive(UB_l, LB_l, is_act_l, is_unst_l,
+                                   layer_dims[layer + 1])
+    bounds_list.append((UB_l, LB_l, alpha_l, is_act_l, is_inact_l, is_unst_l))
+
+# Parts 3+4: Final margin (opt)
+print_ln("Computing final margin bounds (opt)...")
+final_LB, final_UB = compute_final_diff_bounds(weights, biases, bounds_list,
+                                                 layer_dims, num_layers)
+
+# ==================== Output ====================
+print_ln("")
+print_ln("============================================")
+print_ln("CROWN Results (Naive Half-Opt)")
+print_ln("============================================")
+print_ln("  MODEL: %s layers, dims=%s", num_layers, str(layer_dims))
+print_ln("  EPS: %s", eps_secret.reveal())
+print_ln("--------------------------------------------")
+print_ln("MPC LB: %s", final_LB.reveal())
+print_ln("MPC UB: %s", final_UB.reveal())
+robust = (final_LB > 0).reveal()
+print_ln("Robust: %s (1=yes, 0=no)", robust)
+print_ln("============================================")
