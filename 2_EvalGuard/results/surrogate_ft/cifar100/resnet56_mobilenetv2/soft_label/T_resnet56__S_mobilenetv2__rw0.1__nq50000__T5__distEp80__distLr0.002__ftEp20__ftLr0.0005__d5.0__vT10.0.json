@@ -1,0 +1,117 @@
+{
+  "experiment": "surrogate_finetune",
+  "timestamp": "2026-03-29T22:04:01.828222",
+  "dataset": "cifar100",
+  "label_mode": "soft",
+  "teacher": {
+    "name": "resnet56",
+    "num_parameters": 861620,
+    "num_parameters_human": "861,620",
+    "accuracy": 0.7261
+  },
+  "student": {
+    "architecture": "mobilenetv2"
+  },
+  "watermark_config": {
+    "r_w": 0.1,
+    "r_w_percent": "10.0%",
+    "delta_logit": 5.0,
+    "beta": 0.7,
+    "num_classes": 100,
+    "method": "logit_space_confidence_shift",
+    "verification": "mann_whitney_u",
+    "verify_temperature": 10.0
+  },
+  "distillation_baseline": {
+    "temperature": 5,
+    "n_queries": 50000,
+    "dist_epochs": 80,
+    "dist_lr": 0.002,
+    "dist_batch": 128,
+    "surrogate_accuracy": 0.5428,
+    "n_triggers": 5036,
+    "confidence_shift": 0.000814,
+    "mean_trigger_conf": 0.010392,
+    "mean_control_conf": 0.009578,
+    "n_trigger": 5036,
+    "n_control": 5036,
+    "u_statistic": 14791014.5,
+    "p_value": 1.0253326418072095e-47,
+    "log10_p_value": -46.99,
+    "verified": "True",
+    "verify_temperature": 10.0,
+    "label_mode": "soft"
+  },
+  "ft_config": {
+    "ft_fractions": [
+      0.0,
+      0.01,
+      0.05,
+      0.1
+    ],
+    "ft_epochs": 20,
+    "ft_lr": 0.0005
+  },
+  "ft_results": [
+    {
+      "ft_fraction": 0.0,
+      "ft_samples": 0,
+      "accuracy": 0.5428,
+      "confidence_shift": 0.000814,
+      "mean_trigger_conf": 0.010392,
+      "mean_control_conf": 0.009578,
+      "n_trigger": 5036,
+      "n_control": 5036,
+      "u_statistic": 14791014.5,
+      "p_value": 1.0253326418072095e-47,
+      "log10_p_value": -46.99,
+      "verified": "True",
+      "verify_temperature": 10.0
+    },
+    {
+      "ft_fraction": 0.01,
+      "ft_samples": 500,
+      "accuracy": 0.5364,
+      "confidence_shift": 0.000786,
+      "mean_trigger_conf": 0.010375,
+      "mean_control_conf": 0.009589,
+      "n_trigger": 5036,
+      "n_control": 5036,
+      "u_statistic": 14747108.5,
+      "p_value": 7.77115016945023e-46,
+      "log10_p_value": -45.11,
+      "verified": "True",
+      "verify_temperature": 10.0
+    },
+    {
+      "ft_fraction": 0.05,
+      "ft_samples": 2500,
+      "accuracy": 0.539,
+      "confidence_shift": 0.000714,
+      "mean_trigger_conf": 0.010353,
+      "mean_control_conf": 0.009639,
+      "n_trigger": 5036,
+      "n_control": 5036,
+      "u_statistic": 14683447.0,
+      "p_value": 3.518291461757488e-43,
+      "log10_p_value": -42.45,
+      "verified": "True",
+      "verify_temperature": 10.0
+    },
+    {
+      "ft_fraction": 0.1,
+      "ft_samples": 5000,
+      "accuracy": 0.5414,
+      "confidence_shift": 0.000677,
+      "mean_trigger_conf": 0.010355,
+      "mean_control_conf": 0.009678,
+      "n_trigger": 5036,
+      "n_control": 5036,
+      "u_statistic": 14681343.0,
+      "p_value": 4.292425253615401e-43,
+      "log10_p_value": -42.37,
+      "verified": "True",
+      "verify_temperature": 10.0
+    }
+  ]
+}
