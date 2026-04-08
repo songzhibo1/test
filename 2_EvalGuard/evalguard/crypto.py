@@ -9,6 +9,7 @@ Gaussian noise from PRF seed (Eq. 4)
 
 import hmac
 import hashlib
+import secrets
 import struct
 from typing import List
 
@@ -25,10 +26,11 @@ def prf(key: bytes, input_data: bytes) -> bytes:
 
 def keygen(security_param: int = 256) -> bytes:
     """
-    Gen(1^λ) → K: generate a λ-bit secret key.
+    Gen(1^λ) → K: generate a λ-bit secret key using a cryptographically
+    secure RNG (secrets.token_bytes, backed by os.urandom).
     Definition 4.
     """
-    return np.random.bytes(security_param // 8)
+    return secrets.token_bytes(security_param // 8)
 
 
 def kdf(key: bytes, context: str) -> bytes:

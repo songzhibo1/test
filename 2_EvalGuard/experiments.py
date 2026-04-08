@@ -96,25 +96,39 @@ def stem_fidelity(teacher, eps, delta):
 def stem_finetune(teacher, eps, delta, ft_epochs):
     return "T_{}__eps{}__delta{}__ftEp{}".format(teacher, eps, _delta_str(delta), ft_epochs)
 
-def stem_distill(teacher, student, rw, nq, T, dist_epochs, dist_lr, delta_logit=2.0, vT=5.0):
-    return "T_{}__S_{}__rw{}__nq{}__T{}__distEp{}__distLr{}__d{}__vT{}".format(
+def stem_distill(teacher, student, rw, nq, T, dist_epochs, dist_lr, delta_logit=2.0, vT=5.0, tag=""):
+    base = "T_{}__S_{}__rw{}__nq{}__T{}__distEp{}__distLr{}__d{}__vT{}".format(
         teacher, student, rw, nq, T, dist_epochs, dist_lr, delta_logit, vT)
+    if tag:
+        base = "{}__tag_{}".format(base, tag)
+    return base
 
-def stem_surrogate_ft(teacher, student, rw, nq, T, dist_epochs, dist_lr, ft_epochs, ft_lr, delta_logit=2.0, vT=5.0, trigger_mode="rec_trigger", trigger_size=0):
+def stem_surrogate_ft(teacher, student, rw, nq, T, dist_epochs, dist_lr, ft_epochs, ft_lr, delta_logit=2.0, vT=5.0, trigger_mode="rec_trigger", trigger_size=0, tag=""):
     base = "T_{}__S_{}__rw{}__nq{}__T{}__distEp{}__distLr{}__ftEp{}__ftLr{}__d{}__vT{}".format(
         teacher, student, rw, nq, T, dist_epochs, dist_lr, ft_epochs, ft_lr, delta_logit, vT)
     if trigger_mode == "own_trigger":
-        return "{}__trig_own{}".format(base, trigger_size if trigger_size > 0 else "all")
+        base = "{}__trig_own{}".format(base, trigger_size if trigger_size > 0 else "all")
     else:
-        return "{}__trig_rec{}".format(base, trigger_size if trigger_size > 0 else "all")
+        base = "{}__trig_rec{}".format(base, trigger_size if trigger_size > 0 else "all")
+    if tag:
+        base = "{}__tag_{}".format(base, tag)
+    return base
 
 def stem_overhead(teacher, eps):
     return "T_{}__eps{}".format(teacher, eps)
 
-def stem_ckpt(teacher, student, rw, nq, T, dist_epochs, dist_lr, delta_logit=2.0):
-    """Checkpoint stem: no verify_temperature (checkpoints are T-independent)."""
-    return "T_{}__S_{}__rw{}__nq{}__T{}__distEp{}__distLr{}__d{}".format(
+def stem_ckpt(teacher, student, rw, nq, T, dist_epochs, dist_lr, delta_logit=2.0, tag=""):
+    """Checkpoint stem: no verify_temperature (checkpoints are T-independent).
+
+    Prefix 'v6_' marks the checkpoint format version that includes the
+    persisted watermark key K_w (.key file). Caches without the key file
+    will be ignored on load (auto-invalidating older v5 caches).
+    """
+    base = "v6__T_{}__S_{}__rw{}__nq{}__T{}__distEp{}__distLr{}__d{}".format(
         teacher, student, rw, nq, T, dist_epochs, dist_lr, delta_logit)
+    if tag:
+        base = "{}__tag_{}".format(base, tag)
+    return base
 
 
 # ============================================================
@@ -141,11 +155,14 @@ def save_result(data, dataset, subdir, filename, teacher_name=None, student_arch
     print("  -> Saved: {}".format(path))
 
 
-def save_checkpoint(model, triggers, dataset, stem, meta=None, subdir="distill",
+def save_checkpoint(model, triggers, K_w, dataset, stem, meta=None, subdir="distill",
                     teacher_name=None, student_arch=None, label_mode=None):
     """
     Save checkpoint with directory structure:
-      checkpoints/<subdir>/<dataset>/<teacher>_<student>/<label_mode>/<stem>.pt
+      checkpoints/<subdir>/<dataset>/<teacher>_<student>/<label_mode>/<stem>.{pt,pkl,key,meta.json}
+
+    K_w is persisted as a separate .key file (raw bytes). Without this file,
+    own_trigger verification cannot reproduce the target-class mapping.
 
     Falls back to old structure if teacher_name/student_arch/label_mode not provided.
     """
@@ -158,19 +175,27 @@ def save_checkpoint(model, triggers, dataset, stem, meta=None, subdir="distill",
     torch.save(model.state_dict(), ckpt_dir / "{}.pt".format(stem))
     with open(ckpt_dir / "{}.pkl".format(stem), "wb") as f:
         pickle.dump(triggers, f)
+    # Persist watermark key (raw bytes)
+    with open(ckpt_dir / "{}.key".format(stem), "wb") as f:
+        f.write(K_w)
     if meta:
+        # Embed key hex in meta for human inspection (file is the source of truth)
+        meta = dict(meta)
+        meta["K_w_hex"] = K_w.hex()
+        meta["checkpoint_version"] = "v6"
         with open(ckpt_dir / "{}.meta.json".format(stem), "w") as f:
             json.dump(meta, f, indent=2, default=str)
-    print("  -> Cached: {}/{}.pt".format(ckpt_dir, stem))
+    print("  -> Cached: {}/{}.pt (+ .pkl, .key)".format(ckpt_dir, stem))
 
 
 def load_checkpoint(dataset, stem, num_classes, student_arch, subdir="distill",
                     teacher_name=None, label_mode=None):
     """
-    Load checkpoint from directory structure:
-      checkpoints/<subdir>/<dataset>/<teacher>_<student>/<label_mode>/<stem>.pt
+    Load checkpoint. Returns (model, triggers, K_w) or (None, None, None) if
+    any required artifact (.pt / .pkl / .key) is missing.
 
-    Falls back to old structure if teacher_name/label_mode not provided.
+    The .key file is REQUIRED — caches written before v6 are silently
+    invalidated to prevent verification with the wrong watermark key.
     """
     if teacher_name and student_arch and label_mode:
         model_dir = "{}_{}".format(teacher_name, student_arch)
@@ -179,8 +204,9 @@ def load_checkpoint(dataset, stem, num_classes, student_arch, subdir="distill",
         ckpt_dir = CKPT_DIR / subdir / dataset
     pt_path = ckpt_dir / "{}.pt".format(stem)
     pkl_path = ckpt_dir / "{}.pkl".format(stem)
-    if not pt_path.exists() or not pkl_path.exists():
-        return None, None
+    key_path = ckpt_dir / "{}.key".format(stem)
+    if not (pt_path.exists() and pkl_path.exists() and key_path.exists()):
+        return None, None, None
     model = create_student(num_classes=num_classes, arch=student_arch)
     model.load_state_dict(torch.load(pt_path, map_location="cpu", weights_only=True))
     with open(pkl_path, "rb") as f:
@@ -192,12 +218,14 @@ def load_checkpoint(dataset, stem, num_classes, student_arch, subdir="distill",
                     return lambda b: torch.load(io.BytesIO(b), map_location="cpu")
                 return super().find_class(module, name)
         triggers = CPUUnpickler(f).load()
+    with open(key_path, "rb") as f:
+        K_w = f.read()
     # Ensure all trigger queries are on CPU
     for entry in triggers:
         if hasattr(entry, 'query') and isinstance(entry.query, torch.Tensor):
             entry.query = entry.query.cpu()
-    print("  -> Loaded cache: {}".format(pt_path))
-    return model, triggers
+    print("  -> Loaded cache: {} (K_w={}...)".format(pt_path, K_w.hex()[:12]))
+    return model, triggers, K_w
 
 
 # ============================================================
@@ -281,7 +309,8 @@ def verify_and_format(triggers, model, num_classes, K_w, eta, device,
         "mean_control_conf": vr["mean_control_conf"],
         "n_trigger": vr["n_trigger"],
         "n_control": vr["n_control"],
-        "u_statistic": vr["u_statistic"],
+        "test": vr.get("test", "wilcoxon_signed_rank"),
+        "statistic": vr.get("statistic", 0.0),
         "p_value": vr["p_value"],
         "log10_p_value": round(math.log10(max(vr["p_value"], 1e-300)), 2),
         "verified": vr["verified"],
@@ -319,7 +348,8 @@ def verify_own_data_and_format(
         "mean_control_conf": vr["mean_control_conf"],
         "n_trigger": vr["n_trigger"],
         "n_control": vr["n_control"],
-        "u_statistic": vr["u_statistic"],
+        "test": vr.get("test", "wilcoxon_signed_rank"),
+        "statistic": vr.get("statistic", 0.0),
         "p_value": vr["p_value"],
         "log10_p_value": round(math.log10(max(vr["p_value"], 1e-300)), 2),
         "verified": vr["verified"],
@@ -328,16 +358,19 @@ def verify_own_data_and_format(
     }
 
 
-def watermark_config_dict(rw, delta_logit, beta, num_classes, verify_temperature=5.0):
-    return {
+def watermark_config_dict(rw, delta_logit, beta, num_classes, verify_temperature=5.0, delta_min=None):
+    cfg = {
         "r_w": rw, "r_w_percent": "{}%".format(rw * 100),
         "delta_logit": delta_logit,
         "beta": beta,
         "num_classes": num_classes,
         "method": "logit_space_confidence_shift",
-        "verification": "mann_whitney_u",
+        "verification": "wilcoxon_signed_rank_paired",
         "verify_temperature": verify_temperature,
     }
+    if delta_min is not None:
+        cfg["delta_min"] = delta_min
+    return cfg
 
 
 # ============================================================
@@ -387,8 +420,9 @@ def experiment_distillation(model, trainset, testloader, latent_layer, device,
                             teacher_name, student_arch, dataset, config,
                             temperatures, n_queries, rw,
                             eta, dist_epochs, dist_lr, dist_batch,
-                            delta_logit=2.0, beta=0.4, verify_temperature=5.0,
-                            label_mode="soft"):
+                            delta_logit=2.0, beta=0.4, delta_min=0.5,
+                            verify_temperature=5.0,
+                            label_mode="soft", tag=""):
     """
     Table VI: Distillation + Confidence Shift Verification.
 
@@ -436,21 +470,22 @@ def experiment_distillation(model, trainset, testloader, latent_layer, device,
         else:
             print("\n--- [hard-label] ---")
 
-        ck_stem = stem_ckpt(teacher_name, student_arch, rw, n_queries, T, dist_epochs, dist_lr, delta_logit)
+        ck_stem = stem_ckpt(teacher_name, student_arch, rw, n_queries, T, dist_epochs, dist_lr, delta_logit, tag=tag)
 
-        cached_s, cached_trig = load_checkpoint(
+        cached_s, cached_trig, cached_kw = load_checkpoint(
             dataset, ck_stem, nc, student_arch, subdir="distill",
             teacher_name=teacher_name, label_mode="{}_label".format(label_mode))
 
         if cached_s is not None:
-            student, triggers = cached_s, cached_trig
-            Kw = kdf(keygen(256), "watermark")
+            student, triggers, Kw = cached_s, cached_trig, cached_kw
             acc_s = evaluate_accuracy(student, testloader, device)
-            print("  Cached surrogate: acc={:.1f}%, {} triggers".format(acc_s*100, len(triggers)))
+            print("  Cached surrogate: acc={:.1f}%, {} triggers, K_w={}...".format(
+                acc_s*100, len(triggers), Kw.hex()[:12]))
         else:
             Kw = kdf(keygen(256), "watermark")
             wm = WatermarkModule(
                 K_w=Kw, r_w=rw, delta_logit=delta_logit, beta=beta,
+                delta_min=delta_min,
                 num_classes=nc,
                 latent_extractor=ext, layer_name=latent_layer,
             )
@@ -481,12 +516,12 @@ def experiment_distillation(model, trainset, testloader, latent_layer, device,
             acc_s = evaluate_accuracy(student, testloader, device)
             triggers = wm.trigger_set
 
-            save_checkpoint(student, triggers, dataset, ck_stem, meta={
+            save_checkpoint(student, triggers, Kw, dataset, ck_stem, meta={
                 "dataset": dataset, "teacher": teacher_name, "student": student_arch,
                 "T": T, "rw": rw, "nq": n_queries, "delta_logit": delta_logit, "beta": beta,
                 "dist_epochs": dist_epochs, "dist_lr": dist_lr, "dist_batch": dist_batch,
                 "accuracy": round(acc_s, 6), "n_triggers": nt,
-                "label_mode": label_mode,
+                "label_mode": label_mode, "tag": tag,
             }, subdir="distill",
                 teacher_name=teacher_name, student_arch=student_arch,
                 label_mode="{}_label".format(label_mode))
@@ -496,7 +531,7 @@ def experiment_distillation(model, trainset, testloader, latent_layer, device,
         print("  Acc={:.1f}%, Shift={:.4f}, p={:.2e}, V={}".format(
             acc_s*100, vr["confidence_shift"], vr["p_value"], vr["verified"]))
 
-        fname = stem_distill(teacher_name, student_arch, rw, n_queries, T, dist_epochs, dist_lr, delta_logit, vT=verify_temperature)
+        fname = stem_distill(teacher_name, student_arch, rw, n_queries, T, dist_epochs, dist_lr, delta_logit, vT=verify_temperature, tag=tag)
         save_result({
             "experiment": "distillation", "timestamp": datetime.now().isoformat(),
             "dataset": dataset,
@@ -530,9 +565,10 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
                             temperatures, n_queries, rw,
                             eta, dist_epochs, dist_lr, dist_batch,
                             ft_fractions, ft_epochs, ft_lr,
-                            delta_logit=2.0, beta=0.4, verify_temperature=5.0,
+                            delta_logit=2.0, beta=0.4, delta_min=0.5,
+                            verify_temperature=5.0,
                             label_mode="soft", trigger_mode="rec_trigger",
-                            own_trigger_size=0, rec_trigger_size=0):
+                            own_trigger_size=0, rec_trigger_size=0, tag=""):
     """
     Table VII: Surrogate Fine-Tuning Attack.
 
@@ -564,9 +600,9 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
         else:
             print("\n--- [hard-label] ---")
 
-        ck_stem = stem_ckpt(teacher_name, student_arch, rw, n_queries, T, dist_epochs, dist_lr, delta_logit)
+        ck_stem = stem_ckpt(teacher_name, student_arch, rw, n_queries, T, dist_epochs, dist_lr, delta_logit, tag=tag)
 
-        surrogate, triggers = load_checkpoint(
+        surrogate, triggers, Kw = load_checkpoint(
             dataset, ck_stem, nc, student_arch, subdir="distill",
             teacher_name=teacher_name, label_mode="{}_label".format(label_mode))
 
@@ -583,6 +619,7 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
             Kw = kdf(keygen(256), "watermark")
             wm = WatermarkModule(
                 K_w=Kw, r_w=rw, delta_logit=delta_logit, beta=beta,
+                delta_min=delta_min,
                 num_classes=nc,
                 latent_extractor=ext, layer_name=latent_layer,
             )
@@ -603,19 +640,19 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
             triggers = wm.trigger_set
 
             acc_d = evaluate_accuracy(surrogate, testloader, device)
-            save_checkpoint(surrogate, triggers, dataset, ck_stem, meta={
+            save_checkpoint(surrogate, triggers, Kw, dataset, ck_stem, meta={
                 "dataset": dataset, "teacher": teacher_name, "student": student_arch,
                 "T": T, "rw": rw, "nq": n_queries, "delta_logit": delta_logit,
                 "dist_epochs": dist_epochs, "dist_lr": dist_lr, "dist_batch": dist_batch,
                 "accuracy": round(acc_d, 6), "n_triggers": len(triggers),
-                "label_mode": label_mode,
+                "label_mode": label_mode, "tag": tag,
             }, subdir="distill",
                 teacher_name=teacher_name, student_arch=student_arch,
                 label_mode="{}_label".format(label_mode))
 
             vr_d = verify_and_format(triggers, surrogate, nc, Kw, eta, device,
                                      verify_temperature=verify_temperature)
-            dfname = stem_distill(teacher_name, student_arch, rw, n_queries, T, dist_epochs, dist_lr, delta_logit, vT=verify_temperature)
+            dfname = stem_distill(teacher_name, student_arch, rw, n_queries, T, dist_epochs, dist_lr, delta_logit, vT=verify_temperature, tag=tag)
             save_result({
                 "experiment": "distillation",
                 "timestamp": datetime.now().isoformat(),
@@ -639,8 +676,7 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
             }, dataset, "distill", dfname,
                 teacher_name=teacher_name, student_arch=student_arch,
                 label_mode="{}_label".format(label_mode))
-        else:
-            Kw = kdf(keygen(256), "watermark")
+        # else: Kw was loaded from the .key file by load_checkpoint above
 
         acc_base = evaluate_accuracy(surrogate, testloader, device)
         nt = len(triggers)
@@ -723,7 +759,7 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
             fname = stem_surrogate_ft(
                 teacher_name, student_arch, rw, n_queries, T, dist_epochs, dist_lr,
                 ft_epochs, ft_lr, delta_logit, vT=verify_temperature,
-                trigger_mode=t_mode, trigger_size=trigger_size_used)
+                trigger_mode=t_mode, trigger_size=trigger_size_used, tag=tag)
             save_result({
                 "experiment": "surrogate_finetune",
                 "timestamp": datetime.now().isoformat(),
@@ -846,6 +882,10 @@ def main():
                     help="Logit-space shift amount (applied before softmax)")
     pa.add_argument("--beta", type=float, default=0.3,
                     help="Safety factor: delta = min(delta_logit, beta * logit_margin)")
+    pa.add_argument("--delta_min", type=float, default=0.5,
+                    help="Minimum effective delta. Queries whose safe delta would "
+                         "fall below this are NOT recorded as triggers (avoids "
+                         "polluting the trigger set with near-zero signals).")
     pa.add_argument("--verify_temperature", type=float, default=5.0,
                     help="Temperature used during verification softmax")
 
@@ -883,6 +923,11 @@ def main():
 
     pa.add_argument("--epsilons", type=str, default="1,10,50,100,200")
 
+    pa.add_argument("--tag", type=str, default="",
+                    help="Free-form experiment tag appended to checkpoint and result "
+                         "filenames. Use this to distinguish runs with different "
+                         "watermark parameters (e.g. 'paper', 'amplified', 'smoke').")
+
     a = pa.parse_args()
 
     config_key, dataset, teacher_short = resolve_model(a.model, a.dataset)
@@ -900,7 +945,9 @@ def main():
     print("  Experiment: {}".format(a.experiment))
     print("  Label mode: {}".format(a.label_mode))
     print("  Trigger mode: {}".format(a.trigger_mode))
-    print("  rw={}, delta_logit={}, beta={}, verify_T={}".format(a.rw, a.delta_logit, a.beta, a.verify_temperature))
+    print("  rw={}, delta_logit={}, beta={}, delta_min={}, verify_T={}".format(
+        a.rw, a.delta_logit, a.beta, a.delta_min, a.verify_temperature))
+    print("  tag={}".format(a.tag if a.tag else "(none)"))
     print("  dist: epochs={}, lr={}, batch={}".format(a.dist_epochs, a.dist_lr, a.dist_batch))
     print("  ft: epochs={}, lr={}, fractions={}".format(a.ft_epochs, a.ft_lr, ft_fractions))
     print("  temperatures={}".format(temperatures))
@@ -935,8 +982,9 @@ def main():
                                     temperatures, a.nq, a.rw,
                                     2**(-64), a.dist_epochs, a.dist_lr, a.dist_batch,
                                     delta_logit=a.delta_logit, beta=a.beta,
+                                    delta_min=a.delta_min,
                                     verify_temperature=a.verify_temperature,
-                                    label_mode=lm)
+                                    label_mode=lm, tag=a.tag)
 
     if a.experiment in ("surrogate_ft", "all"):
         for lm in label_modes:
@@ -946,10 +994,11 @@ def main():
                                     2**(-64), a.dist_epochs, a.dist_lr, a.dist_batch,
                                     ft_fractions, a.ft_epochs, a.ft_lr,
                                     delta_logit=a.delta_logit, beta=a.beta,
+                                    delta_min=a.delta_min,
                                     verify_temperature=a.verify_temperature,
                                     label_mode=lm, trigger_mode=a.trigger_mode,
                                     own_trigger_size=a.own_trigger_size,
-                                    rec_trigger_size=a.rec_trigger_size)
+                                    rec_trigger_size=a.rec_trigger_size, tag=a.tag)
 
     if a.experiment in ("overhead", "all"):
         experiment_overhead(model, testloader, a.device, a.epsilon, a.delta,

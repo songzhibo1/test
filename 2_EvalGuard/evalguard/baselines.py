@@ -21,7 +21,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .watermark import kendall_tau, binomial_p_value
+from .watermark_math import binomial_p_value
 
 
 # ============================================================
@@ -83,9 +83,14 @@ class DAWNWatermark:
         suspect_model: nn.Module,
         device: str = "cpu",
         eta: float = 2 ** (-64),
+        num_classes: int = 10,
     ) -> Dict:
         """
         DAWN verification: check if suspect model returns the flipped class.
+
+        Args:
+            num_classes: total number of classes (used for the H0 probability
+                         p0 = 1/C). Defaults to 10 for CIFAR-10.
         """
         suspect_model.to(device).eval()
         n_match = 0
@@ -100,8 +105,7 @@ class DAWNWatermark:
 
         n_total = len(self.trigger_set)
         # Under H_0, probability of returning any specific class ≈ 1/C
-        # For CIFAR-10: p_0 ≈ 0.1
-        p0 = 0.1  # Conservative estimate
+        p0 = 1.0 / num_classes
         p_value = binomial_p_value(n_match, n_total, p0) if n_total > 0 else 1.0
 
         return {

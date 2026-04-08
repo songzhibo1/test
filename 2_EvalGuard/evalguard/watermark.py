@@ -110,14 +110,38 @@ def derive_target_class(K_w: bytes, top1_class: int, num_classes: int) -> int:
     """
     Definition 8: Target-Class Mapping.
 
-    t(c) = HMAC(K_w, c) mod (C-1), adjusted to skip c itself.
+    t(c) = HMAC(K_w, "target:c") mod (C-1), adjusted to skip c itself.
     Deterministic: same key + same top-1 class → same target class.
     """
-    h = hmac.new(K_w, str(top1_class).encode(), hashlib.sha256).digest()
+    h = hmac.new(K_w, ("target:" + str(top1_class)).encode(), hashlib.sha256).digest()
     t = int.from_bytes(h[:4], "big") % (num_classes - 1)
     if t >= top1_class:
         t += 1
     return t
+
+
+def derive_control_class(K_w: bytes, top1_class: int, num_classes: int) -> int:
+    """
+    Deterministic control class for paired verification.
+
+    Picks a class that is neither the top-1 class c nor the target class t(c),
+    using a domain-separated HMAC so it is reproducible across runs and
+    cryptographically tied to K_w.
+
+    Used by verify_ownership to construct the paired control sample for
+    Wilcoxon signed-rank testing.
+    """
+    target = derive_target_class(K_w, top1_class, num_classes)
+    h = hmac.new(K_w, ("control:" + str(top1_class)).encode(), hashlib.sha256).digest()
+    # Pick from C-2 candidates (excluding c and t(c))
+    raw = int.from_bytes(h[:4], "big") % (num_classes - 2)
+    # Map raw index in [0, C-2) onto the C classes minus {c, t(c)}
+    excluded = sorted({top1_class, target})
+    cls = raw
+    for ex in excluded:
+        if cls >= ex:
+            cls += 1
+    return cls
 
 
 # ============================================================
@@ -146,6 +170,10 @@ class WatermarkModule:
         r_w: watermark ratio (default 0.005)
         delta_logit: logit-space shift amount (default 2.0)
         beta: safety factor to cap shift below logit margin (default 0.3)
+        delta_min: minimum effective delta — queries whose safe delta would
+                   fall below this threshold are NOT recorded as triggers
+                   (avoids polluting the trigger set with near-zero signals
+                   on low-margin samples). Default 0.5.
         num_classes: total number of classes
         latent_extractor: for R(x) computation
         layer_name: which hidden layer for latent extraction
@@ -154,6 +182,7 @@ class WatermarkModule:
     r_w: float = 0.005
     delta_logit: float = 2.0
     beta: float = 0.3
+    delta_min: float = 0.5
     num_classes: int = 10
     latent_extractor: LatentExtractor = None
     layer_name: str = ""
@@ -192,9 +221,10 @@ class WatermarkModule:
 
         1. Decide whether to watermark this query
         2. Identify top-1 class c and target class t(c)
-        3. Add delta to logits[t(c)]
-        4. Apply softmax(logits / T) to get probabilities
-        5. Record trigger entry
+        3. Compute safe delta; if below delta_min, skip (do not record)
+        4. Add delta to logits[t(c)]
+        5. Apply softmax(logits / T) to get probabilities
+        6. Record trigger entry
 
         Args:
             logits: raw logits for this sample (1D numpy array)
@@ -211,11 +241,14 @@ class WatermarkModule:
             logits_t = torch.tensor(logits).unsqueeze(0) / temperature
             return torch.softmax(logits_t, dim=-1).squeeze(0).numpy()
 
+        # Compute safe delta in logit space; reject low-signal samples
+        delta = self._compute_delta_logit(logits)
+        if delta < self.delta_min:
+            logits_t = torch.tensor(logits).unsqueeze(0) / temperature
+            return torch.softmax(logits_t, dim=-1).squeeze(0).numpy()
+
         top1_class = int(np.argmax(logits))
         target_class = self._get_target_class(top1_class)
-
-        # Compute safe delta in logit space
-        delta = self._compute_delta_logit(logits)
 
         # Apply logit-space shift
         logits_wm = logits.copy()
@@ -256,13 +289,16 @@ class WatermarkModule:
             if not should_wm:
                 continue
 
-            n_watermarked += 1
             logits_i = batch_logits[i]
+
+            # Compute safe delta in logit space; skip if too weak
+            delta = self._compute_delta_logit(logits_i)
+            if delta < self.delta_min:
+                continue
+
+            n_watermarked += 1
             top1_class = int(np.argmax(logits_i))
             target_class = self._get_target_class(top1_class)
-
-            # Compute safe delta in logit space
-            delta = self._compute_delta_logit(logits_i)
 
             # Apply logit-space shift
             batch_logits_wm[i][target_class] += delta
@@ -280,16 +316,6 @@ class WatermarkModule:
 
         return batch_probs, n_watermarked
 
-    # Keep old interface for backward compatibility
-    def embed(self, model, x, p, device="cpu"):
-        """Backward-compatible wrapper. Use embed_logits for new code."""
-        return self.embed_logits(model, x, p, temperature=1.0, device=device)
-
-    def embed_batch(self, model, batch_x, batch_p, device="cpu"):
-        """Backward-compatible wrapper. Use embed_batch_logits for new code."""
-        return self.embed_batch_logits(model, batch_x, batch_p, temperature=1.0, device=device)
-
-
 # ============================================================
 # Algorithm 3: Ownership Verification (Confidence Shift)
 # ============================================================
@@ -304,115 +330,181 @@ def verify_ownership(
     eta: float = 2 ** (-64),
     device: str = "cpu",
     verify_temperature: float = 5.0,
+    batch_size: int = 64,
 ) -> Dict:
     """
     Algorithm 3: Ownership Verification via Confidence Shift Detection.
 
-    Uses a verification temperature to amplify sub-dominant probability
-    differences. The logit-space watermark signal is T-invariant, so
-    any T > 1 that spreads out sub-dominant probabilities works.
+    Statistical design (paired vs independent):
+
+      1. PAIRED MODE (default — control_queries is None):
+         For each trigger query, in a single forward pass we read
+         BOTH p[target_class] (trigger sample) and p[control_class]
+         (paired control sample), where control_class is derived
+         deterministically from K_w via derive_control_class().
+
+         Test: scipy.stats.wilcoxon(trigger - control, alternative='greater')
+         (Wilcoxon signed-rank test, the correct paired analogue of
+         Mann-Whitney U).
+
+      2. INDEPENDENT MODE (control_queries provided):
+         Compute p[derive_target_class(K_w, top1)] separately on a
+         held-out pool of independent inputs.
+
+         Test: scipy.stats.mannwhitneyu(trigger, control, alternative='greater').
+
+    The verify_temperature is used to spread out sub-dominant probabilities;
+    the logit-space watermark signal is T-invariant, so any T > 1 works.
 
     Args:
         trigger_set: list of TriggerEntry from embedding phase
         suspect_model: the model to verify
-        control_queries: non-trigger queries for the control group
-        control_top1_classes: top-1 classes for control queries
-        K_w: watermark key
+        control_queries: optional independent inputs for the control group
+        control_top1_classes: optional top-1 hint for independent controls
+        K_w: watermark key (REQUIRED for control_class derivation)
         num_classes: total number of classes
         eta: significance threshold
         device: computation device
         verify_temperature: T used to compute softmax during verification
-            (higher T amplifies sub-dominant differences)
+        batch_size: batch size for forward passes
     """
+    if K_w is None:
+        raise ValueError("K_w is required for verify_ownership (control class derivation).")
+
     suspect_model.to(device).eval()
     vT = verify_temperature
 
-    # Collect trigger group
-    trigger_confidences = []
+    # ----------------------------------------------------------
+    # PAIRED MODE: single forward pass per trigger, collect both
+    # target_class and control_class confidences from the same pmf.
+    # ----------------------------------------------------------
+    if control_queries is None:
+        trigger_confidences: List[float] = []
+        control_confidences: List[float] = []
+        if len(trigger_set) == 0:
+            return _empty_verification_result(eta, vT, mode="paired_wilcoxon")
 
-    for entry in trigger_set:
-        x = entry.query
-        if isinstance(x, torch.Tensor):
-            x_input = x.unsqueeze(0).to(device) if x.dim() == 3 else x.to(device)
-        else:
-            x_input = torch.tensor(x).unsqueeze(0).to(device)
-
+        # Batch the trigger queries to amortize forward cost
+        n = len(trigger_set)
         with torch.no_grad():
-            logits = suspect_model(x_input)
-            p = torch.softmax(logits / vT, dim=-1).cpu().numpy().flatten()
+            for start in range(0, n, batch_size):
+                end = min(start + batch_size, n)
+                batch_entries = trigger_set[start:end]
+                # Stack queries into a batch
+                batch_x = torch.stack([
+                    e.query if isinstance(e.query, torch.Tensor)
+                    else torch.tensor(e.query)
+                    for e in batch_entries
+                ]).to(device)
+                logits = suspect_model(batch_x)
+                probs = torch.softmax(logits / vT, dim=-1).cpu().numpy()
+                for i, entry in enumerate(batch_entries):
+                    trigger_confidences.append(float(probs[i, entry.target_class]))
+                    control_class = derive_control_class(
+                        K_w, entry.top1_class, num_classes)
+                    control_confidences.append(float(probs[i, control_class]))
 
-        trigger_confidences.append(float(p[entry.target_class]))
+        trigger_arr = np.array(trigger_confidences)
+        control_arr = np.array(control_confidences)
+        diffs = trigger_arr - control_arr
 
-    # Collect control group
+        # Wilcoxon signed-rank test (paired, one-sided)
+        # zero_method='wilcox' drops zero differences (standard practice)
+        try:
+            res = stats.wilcoxon(diffs, alternative='greater', zero_method='wilcox')
+            stat_val = float(res.statistic)
+            p_value = float(res.pvalue)
+        except ValueError:
+            # All differences are zero -> no signal
+            stat_val, p_value = 0.0, 1.0
+
+        return {
+            "verified": p_value < eta,
+            "p_value": p_value,
+            "test": "wilcoxon_signed_rank",
+            "statistic": stat_val,
+            "mean_trigger_conf": round(float(trigger_arr.mean()), 6),
+            "mean_control_conf": round(float(control_arr.mean()), 6),
+            "confidence_shift": round(float(diffs.mean()), 6),
+            "n_trigger": int(len(trigger_arr)),
+            "n_control": int(len(control_arr)),
+            "n_pairs": int(len(diffs)),
+            "eta": eta,
+            "verify_temperature": vT,
+        }
+
+    # ----------------------------------------------------------
+    # INDEPENDENT MODE: trigger group on trigger inputs,
+    # control group on independent held-out inputs.
+    # ----------------------------------------------------------
+    trigger_confidences = []
+    if len(trigger_set) > 0:
+        n = len(trigger_set)
+        with torch.no_grad():
+            for start in range(0, n, batch_size):
+                end = min(start + batch_size, n)
+                batch_entries = trigger_set[start:end]
+                batch_x = torch.stack([
+                    e.query if isinstance(e.query, torch.Tensor)
+                    else torch.tensor(e.query)
+                    for e in batch_entries
+                ]).to(device)
+                logits = suspect_model(batch_x)
+                probs = torch.softmax(logits / vT, dim=-1).cpu().numpy()
+                for i, entry in enumerate(batch_entries):
+                    trigger_confidences.append(float(probs[i, entry.target_class]))
+
     control_confidences = []
+    if isinstance(control_queries, torch.Tensor):
+        n_ctrl = control_queries.size(0)
+        with torch.no_grad():
+            for start in range(0, n_ctrl, batch_size):
+                end = min(start + batch_size, n_ctrl)
+                batch_x = control_queries[start:end].to(device)
+                logits = suspect_model(batch_x)
+                probs = torch.softmax(logits / vT, dim=-1).cpu().numpy()
+                for i in range(end - start):
+                    if control_top1_classes is not None:
+                        top1_c = int(control_top1_classes[start + i])
+                    else:
+                        top1_c = int(np.argmax(probs[i]))
+                    t_c = derive_target_class(K_w, top1_c, num_classes)
+                    control_confidences.append(float(probs[i, t_c]))
 
-    if control_queries is not None:
-        if isinstance(control_queries, torch.Tensor):
-            n_control = control_queries.size(0)
-            for i in range(n_control):
-                x = control_queries[i]
-                x_input = x.unsqueeze(0).to(device) if x.dim() == 3 else x.to(device)
+    trigger_arr = np.array(trigger_confidences)
+    control_arr = np.array(control_confidences)
 
-                with torch.no_grad():
-                    logits = suspect_model(x_input)
-                    p = torch.softmax(logits / vT, dim=-1).cpu().numpy().flatten()
-
-                if control_top1_classes is not None:
-                    top1_c = control_top1_classes[i]
-                else:
-                    top1_c = int(np.argmax(p))
-
-                t_c = derive_target_class(K_w, top1_c, num_classes)
-                control_confidences.append(float(p[t_c]))
-    else:
-        # Fallback: use trigger queries, read a different class as control
-        for entry in trigger_set:
-            x = entry.query
-            if isinstance(x, torch.Tensor):
-                x_input = x.unsqueeze(0).to(device) if x.dim() == 3 else x.to(device)
-            else:
-                x_input = torch.tensor(x).unsqueeze(0).to(device)
-
-            with torch.no_grad():
-                logits = suspect_model(x_input)
-                p = torch.softmax(logits / vT, dim=-1).cpu().numpy().flatten()
-
-            # Pick a deterministic non-target, non-top1 class as control
-            candidates = [c for c in range(num_classes)
-                          if c != entry.top1_class and c != entry.target_class]
-            if isinstance(x, torch.Tensor):
-                hash_val = hash(x.cpu().numpy().tobytes())
-            else:
-                hash_val = hash(x)
-            control_class = candidates[hash_val % len(candidates)]
-            control_confidences.append(float(p[control_class]))
-
-    trigger_confidences = np.array(trigger_confidences)
-    control_confidences = np.array(control_confidences)
-
-    # Mann-Whitney U test (one-sided: trigger > control)
-    if len(trigger_confidences) > 0 and len(control_confidences) > 0:
+    if len(trigger_arr) > 0 and len(control_arr) > 0:
         u_stat, p_value = stats.mannwhitneyu(
-            trigger_confidences, control_confidences,
-            alternative='greater'
-        )
+            trigger_arr, control_arr, alternative='greater')
+        u_stat, p_value = float(u_stat), float(p_value)
     else:
-        u_stat, p_value = 0, 1.0
-
-    mean_trigger = float(np.mean(trigger_confidences)) if len(trigger_confidences) > 0 else 0.0
-    mean_control = float(np.mean(control_confidences)) if len(control_confidences) > 0 else 0.0
+        u_stat, p_value = 0.0, 1.0
 
     return {
         "verified": p_value < eta,
-        "p_value": float(p_value),
-        "u_statistic": float(u_stat),
-        "mean_trigger_conf": round(mean_trigger, 6),
-        "mean_control_conf": round(mean_control, 6),
-        "confidence_shift": round(mean_trigger - mean_control, 6),
-        "n_trigger": len(trigger_confidences),
-        "n_control": len(control_confidences),
+        "p_value": p_value,
+        "test": "mann_whitney_u",
+        "statistic": u_stat,
+        "mean_trigger_conf": round(float(trigger_arr.mean()) if len(trigger_arr) else 0.0, 6),
+        "mean_control_conf": round(float(control_arr.mean()) if len(control_arr) else 0.0, 6),
+        "confidence_shift": round(
+            (float(trigger_arr.mean()) - float(control_arr.mean()))
+            if len(trigger_arr) and len(control_arr) else 0.0,
+            6),
+        "n_trigger": int(len(trigger_arr)),
+        "n_control": int(len(control_arr)),
         "eta": eta,
         "verify_temperature": vT,
+    }
+
+
+def _empty_verification_result(eta, vT, mode="paired_wilcoxon"):
+    return {
+        "verified": False, "p_value": 1.0, "test": mode, "statistic": 0.0,
+        "mean_trigger_conf": 0.0, "mean_control_conf": 0.0,
+        "confidence_shift": 0.0, "n_trigger": 0, "n_control": 0, "n_pairs": 0,
+        "eta": eta, "verify_temperature": vT,
     }
 
 
@@ -510,13 +602,10 @@ def verify_ownership_own_data(
     )
 
     if len(triggers) == 0:
-        return {
-            "verified": False, "p_value": 1.0, "u_statistic": 0.0,
-            "mean_trigger_conf": 0.0, "mean_control_conf": 0.0,
-            "confidence_shift": 0.0, "n_trigger": 0, "n_control": 0,
-            "eta": eta, "verify_temperature": verify_temperature,
-            "trigger_source": "own_trigger",
-        }
+        empty = _empty_verification_result(eta, verify_temperature)
+        empty["trigger_source"] = "own_trigger"
+        empty["n_own_data_scanned"] = 0
+        return empty
 
     # Step 2 & 3: verify using reconstructed triggers (reuse existing function)
     result = verify_ownership(
@@ -526,6 +615,7 @@ def verify_ownership_own_data(
         verify_temperature=verify_temperature,
     )
     result["trigger_source"] = "own_trigger"
-    result["n_own_data_scanned"] = sum(
-        len(dl) for dl in [own_dataloader]) * own_dataloader.batch_size
+    # Every scanned input becomes a trigger (no Phi(x) filter), so
+    # the scan count equals len(triggers).
+    result["n_own_data_scanned"] = len(triggers)
     return result

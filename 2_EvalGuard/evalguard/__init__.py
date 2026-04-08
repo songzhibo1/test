@@ -34,6 +34,7 @@ if _il.util.find_spec("torch") is not None:
         TriggerEntry,
         verify_ownership,
         derive_target_class,
+        derive_control_class,
     )
 
 __all__ = [
@@ -42,6 +43,6 @@ __all__ = [
     "recover_weights", "SecretPackage",
     "compute_sigma", "compute_l2_sensitivity",
     "WatermarkModule", "LatentExtractor", "TriggerEntry",
-    "verify_ownership", "derive_target_class",
+    "verify_ownership", "derive_target_class", "derive_control_class",
     "binomial_p_value", "mannwhitney_p_value",
 ]
