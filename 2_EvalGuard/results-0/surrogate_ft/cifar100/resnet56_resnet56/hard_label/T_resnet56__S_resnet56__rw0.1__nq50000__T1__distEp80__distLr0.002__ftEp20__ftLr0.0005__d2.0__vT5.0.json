@@ -1,0 +1,117 @@
+{
+  "experiment": "surrogate_finetune",
+  "timestamp": "2026-03-29T18:19:21.394997",
+  "dataset": "cifar100",
+  "label_mode": "hard",
+  "teacher": {
+    "name": "resnet56",
+    "num_parameters": 861620,
+    "num_parameters_human": "861,620",
+    "accuracy": 0.7261
+  },
+  "student": {
+    "architecture": "resnet56"
+  },
+  "watermark_config": {
+    "r_w": 0.1,
+    "r_w_percent": "10.0%",
+    "delta_logit": 2.0,
+    "beta": 0.3,
+    "num_classes": 100,
+    "method": "logit_space_confidence_shift",
+    "verification": "mann_whitney_u",
+    "verify_temperature": 5.0
+  },
+  "distillation_baseline": {
+    "temperature": 1,
+    "n_queries": 50000,
+    "dist_epochs": 80,
+    "dist_lr": 0.002,
+    "dist_batch": 128,
+    "surrogate_accuracy": 0.4826,
+    "n_triggers": 5050,
+    "confidence_shift": 4.4e-05,
+    "mean_trigger_conf": 0.004519,
+    "mean_control_conf": 0.004474,
+    "n_trigger": 5050,
+    "n_control": 5050,
+    "u_statistic": 12749985.5,
+    "p_value": 0.5034443894870287,
+    "log10_p_value": -0.3,
+    "verified": "False",
+    "verify_temperature": 5.0,
+    "label_mode": "hard"
+  },
+  "ft_config": {
+    "ft_fractions": [
+      0.0,
+      0.01,
+      0.05,
+      0.1
+    ],
+    "ft_epochs": 20,
+    "ft_lr": 0.0005
+  },
+  "ft_results": [
+    {
+      "ft_fraction": 0.0,
+      "ft_samples": 0,
+      "accuracy": 0.4826,
+      "confidence_shift": 4.4e-05,
+      "mean_trigger_conf": 0.004519,
+      "mean_control_conf": 0.004474,
+      "n_trigger": 5050,
+      "n_control": 5050,
+      "u_statistic": 12749985.5,
+      "p_value": 0.5034443894870287,
+      "log10_p_value": -0.3,
+      "verified": "False",
+      "verify_temperature": 5.0
+    },
+    {
+      "ft_fraction": 0.01,
+      "ft_samples": 500,
+      "accuracy": 0.4977,
+      "confidence_shift": -9.4e-05,
+      "mean_trigger_conf": 0.004223,
+      "mean_control_conf": 0.004317,
+      "n_trigger": 5050,
+      "n_control": 5050,
+      "u_statistic": 12723282.0,
+      "p_value": 0.5756946387928956,
+      "log10_p_value": -0.24,
+      "verified": "False",
+      "verify_temperature": 5.0
+    },
+    {
+      "ft_fraction": 0.05,
+      "ft_samples": 2500,
+      "accuracy": 0.5107,
+      "confidence_shift": 2.4e-05,
+      "mean_trigger_conf": 0.004453,
+      "mean_control_conf": 0.00443,
+      "n_trigger": 5050,
+      "n_control": 5050,
+      "u_statistic": 12752392.0,
+      "p_value": 0.49689187377723676,
+      "log10_p_value": -0.3,
+      "verified": "False",
+      "verify_temperature": 5.0
+    },
+    {
+      "ft_fraction": 0.1,
+      "ft_samples": 5000,
+      "accuracy": 0.5166,
+      "confidence_shift": 7.3e-05,
+      "mean_trigger_conf": 0.004693,
+      "mean_control_conf": 0.004619,
+      "n_trigger": 5050,
+      "n_control": 5050,
+      "u_statistic": 12797739.0,
+      "p_value": 0.37551006164427847,
+      "log10_p_value": -0.43,
+      "verified": "False",
+      "verify_temperature": 5.0
+    }
+  ]
+}
