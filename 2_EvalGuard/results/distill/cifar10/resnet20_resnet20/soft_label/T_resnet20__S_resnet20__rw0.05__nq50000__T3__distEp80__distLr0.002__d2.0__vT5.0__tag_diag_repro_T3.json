@@ -1,0 +1,104 @@
+{
+  "experiment": "distillation",
+  "timestamp": "2026-04-09T07:51:20.105680",
+  "note": "Auto-generated during surrogate_ft",
+  "dataset": "cifar10",
+  "label_mode": "soft",
+  "teacher": {
+    "name": "resnet20",
+    "num_parameters": 272474,
+    "num_parameters_human": "272,474",
+    "accuracy": 0.9259
+  },
+  "student": {
+    "architecture": "resnet20"
+  },
+  "watermark_config": {
+    "r_w": 0.05,
+    "r_w_percent": "5.0%",
+    "delta_logit": 2.0,
+    "beta": 0.3,
+    "num_classes": 10,
+    "method": "logit_space_confidence_shift",
+    "verification": "wilcoxon_signed_rank_paired",
+    "verify_temperature": 5.0
+  },
+  "distillation_config": {
+    "temperature": 3,
+    "n_queries": 50000,
+    "epochs": 80,
+    "lr": 0.002,
+    "batch_size": 128,
+    "label_mode": "soft"
+  },
+  "result": {
+    "temperature": 3,
+    "student_accuracy": 0.8436,
+    "n_triggers": 2496,
+    "confidence_shift": 0.015739,
+    "mean_trigger_conf": 0.059633,
+    "mean_control_conf": 0.043894,
+    "n_trigger": 2496,
+    "n_control": 2496,
+    "test": "wilcoxon_signed_rank",
+    "statistic": 2551379.0,
+    "p_value": 8.731866290392236e-168,
+    "log10_p_value": -167.06,
+    "verified": true,
+    "verify_temperature": 5.0,
+    "trigger_source": "rec_trigger",
+    "all_designs": {
+      "single_ctrl": {
+        "verified": true,
+        "p_value": 8.731866290392236e-168,
+        "log10_p_value": -167.06,
+        "test": "wilcoxon_signed_rank",
+        "statistic": 2551379.0,
+        "control_design": "single_ctrl",
+        "mean_trigger_conf": 0.059633,
+        "mean_control_conf": 0.043894,
+        "confidence_shift": 0.015739,
+        "median_shift": 0.011202,
+        "n_trigger": 2496,
+        "n_control": 2496,
+        "n_pairs": 2496,
+        "eta": 5.421010862427522e-20,
+        "verify_temperature": 5.0
+      },
+      "mean_rest": {
+        "verified": true,
+        "p_value": 4.459206279899142e-73,
+        "log10_p_value": -72.35,
+        "test": "wilcoxon_signed_rank",
+        "statistic": 2207840.0,
+        "control_design": "mean_rest",
+        "mean_trigger_conf": 0.059633,
+        "mean_control_conf": 0.049041,
+        "confidence_shift": 0.010592,
+        "median_shift": 0.004218,
+        "n_trigger": 2496,
+        "n_control": 2496,
+        "n_pairs": 2496,
+        "eta": 5.421010862427522e-20,
+        "verify_temperature": 5.0
+      },
+      "suspect_top1": {
+        "verified": true,
+        "p_value": 8.731866290392236e-168,
+        "log10_p_value": -167.06,
+        "test": "wilcoxon_signed_rank",
+        "statistic": 2551379.0,
+        "control_design": "suspect_top1",
+        "mean_trigger_conf": 0.059633,
+        "mean_control_conf": 0.043894,
+        "confidence_shift": 0.015739,
+        "median_shift": 0.011202,
+        "n_trigger": 2496,
+        "n_control": 2496,
+        "n_pairs": 2496,
+        "eta": 5.421010862427522e-20,
+        "verify_temperature": 5.0
+      }
+    }
+  }
+}

@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader, Subset
 from evalguard import (
     obfuscate_model_vectorized, recover_weights,
     WatermarkModule, LatentExtractor, verify_ownership,
+    verify_ownership_all_designs, verify_ownership_own_data_all_designs,
 )
 from evalguard.watermark import (
     verify_ownership_own_data, reconstruct_triggers_from_own_data,
@@ -287,35 +288,71 @@ def verify_and_format(triggers, model, num_classes, K_w, eta, device,
                       verify_temperature=5.0):
     """
     Run confidence shift verification and format results.
-    Uses verify_temperature to amplify sub-dominant probability differences.
+
+    Always runs the THREE paired control designs (single_ctrl, mean_rest,
+    suspect_top1) in a single forward pass; the top-level summary fields
+    report 'single_ctrl' for backward compatibility, and the full diagnostic
+    triple is attached as 'all_designs' for post-hoc analysis.
+
+    The independent-control-queries mode (control_queries != None) still
+    delegates to verify_ownership for the Mann-Whitney U branch.
     """
     if len(triggers) == 0:
         return {"confidence_shift": 0.0, "n_trigger": 0, "n_control": 0,
-                "p_value": 1.0, "verified": False}
+                "p_value": 1.0, "verified": False, "all_designs": {}}
 
-    vr = verify_ownership(
+    # Independent-mode (Mann-Whitney U) — rarely used, keep original path.
+    if control_queries is not None:
+        vr = verify_ownership(
+            triggers, model,
+            control_queries=control_queries,
+            control_top1_classes=control_top1,
+            K_w=K_w,
+            num_classes=num_classes,
+            eta=eta,
+            device=device,
+            verify_temperature=verify_temperature,
+        )
+        return {
+            "confidence_shift": vr["confidence_shift"],
+            "mean_trigger_conf": vr["mean_trigger_conf"],
+            "mean_control_conf": vr["mean_control_conf"],
+            "n_trigger": vr["n_trigger"],
+            "n_control": vr["n_control"],
+            "test": vr.get("test", "mann_whitney_u"),
+            "statistic": vr.get("statistic", 0.0),
+            "p_value": vr["p_value"],
+            "log10_p_value": round(math.log10(max(vr["p_value"], 1e-300)), 2),
+            "verified": vr["verified"],
+            "verify_temperature": verify_temperature,
+            "trigger_source": "rec_trigger",
+            "all_designs": {},
+        }
+
+    # Paired mode — run all three control designs on the same forward pass.
+    all_d = verify_ownership_all_designs(
         triggers, model,
-        control_queries=control_queries,
-        control_top1_classes=control_top1,
-        K_w=K_w,
-        num_classes=num_classes,
-        eta=eta,
-        device=device,
+        K_w=K_w, num_classes=num_classes,
+        eta=eta, device=device,
         verify_temperature=verify_temperature,
     )
+    primary = all_d["single_ctrl"]
     return {
-        "confidence_shift": vr["confidence_shift"],
-        "mean_trigger_conf": vr["mean_trigger_conf"],
-        "mean_control_conf": vr["mean_control_conf"],
-        "n_trigger": vr["n_trigger"],
-        "n_control": vr["n_control"],
-        "test": vr.get("test", "wilcoxon_signed_rank"),
-        "statistic": vr.get("statistic", 0.0),
-        "p_value": vr["p_value"],
-        "log10_p_value": round(math.log10(max(vr["p_value"], 1e-300)), 2),
-        "verified": vr["verified"],
+        "confidence_shift": primary["confidence_shift"],
+        "mean_trigger_conf": primary["mean_trigger_conf"],
+        "mean_control_conf": primary["mean_control_conf"],
+        "n_trigger": primary["n_trigger"],
+        "n_control": primary["n_control"],
+        "test": primary.get("test", "wilcoxon_signed_rank"),
+        "statistic": primary.get("statistic", 0.0),
+        "p_value": primary["p_value"],
+        "log10_p_value": primary.get(
+            "log10_p_value",
+            round(math.log10(max(primary["p_value"], 1e-300)), 2)),
+        "verified": primary["verified"],
         "verify_temperature": verify_temperature,
         "trigger_source": "rec_trigger",
+        "all_designs": all_d,
     }
 
 
@@ -327,34 +364,39 @@ def verify_own_data_and_format(
 ):
     """
     Own-data verification: reconstruct triggers from Owner's data,
-    then verify against suspect model. Zero D_eval leakage.
+    then verify against suspect model. Zero D_eval leakage (if the
+    own_loader is a held-out dataset disjoint from D_eval).
 
-    Args:
-        max_triggers: collect exactly this many triggers then stop.
-                      0 = collect all from dataloader.
+    Runs the three paired control designs on a single forward pass.
+    Top-level summary reports single_ctrl; full diagnostic triple in
+    'all_designs'. r_w / latent_extractor / layer_name / delta_logit /
+    beta are retained for API compatibility but unused (no Phi(x) filter).
     """
-    vr = verify_ownership_own_data(
+    all_d = verify_ownership_own_data_all_designs(
         owner_model, own_loader, suspect_model,
-        K_w=K_w, r_w=r_w, num_classes=num_classes,
-        latent_extractor=latent_extractor, layer_name=layer_name,
-        delta_logit=delta_logit, beta=beta,
+        K_w=K_w, num_classes=num_classes,
         eta=eta, device=device,
         verify_temperature=verify_temperature,
         max_triggers=max_triggers,
     )
+    primary = all_d["single_ctrl"]
     return {
-        "confidence_shift": vr["confidence_shift"],
-        "mean_trigger_conf": vr["mean_trigger_conf"],
-        "mean_control_conf": vr["mean_control_conf"],
-        "n_trigger": vr["n_trigger"],
-        "n_control": vr["n_control"],
-        "test": vr.get("test", "wilcoxon_signed_rank"),
-        "statistic": vr.get("statistic", 0.0),
-        "p_value": vr["p_value"],
-        "log10_p_value": round(math.log10(max(vr["p_value"], 1e-300)), 2),
-        "verified": vr["verified"],
+        "confidence_shift": primary["confidence_shift"],
+        "mean_trigger_conf": primary["mean_trigger_conf"],
+        "mean_control_conf": primary["mean_control_conf"],
+        "n_trigger": primary["n_trigger"],
+        "n_control": primary["n_control"],
+        "test": primary.get("test", "wilcoxon_signed_rank"),
+        "statistic": primary.get("statistic", 0.0),
+        "p_value": primary["p_value"],
+        "log10_p_value": primary.get(
+            "log10_p_value",
+            round(math.log10(max(primary["p_value"], 1e-300)), 2)),
+        "verified": primary["verified"],
         "verify_temperature": verify_temperature,
         "trigger_source": "own_trigger",
+        "n_own_data_scanned": primary.get("n_own_data_scanned", 0),
+        "all_designs": all_d,
     }
 
 
@@ -530,6 +572,15 @@ def experiment_distillation(model, trainset, testloader, latent_layer, device,
                                verify_temperature=verify_temperature)
         print("  Acc={:.1f}%, Shift={:.4f}, p={:.2e}, V={}".format(
             acc_s*100, vr["confidence_shift"], vr["p_value"], vr["verified"]))
+        _ad = vr.get("all_designs") or {}
+        for _k in ("single_ctrl", "mean_rest", "suspect_top1"):
+            _d = _ad.get(_k)
+            if _d is None:
+                continue
+            print("    [{:<12s}] shift={:+.5f}  median={:+.5f}  p={:.2e}  V={}".format(
+                _k, _d.get("confidence_shift", 0.0),
+                _d.get("median_shift", 0.0),
+                _d.get("p_value", 1.0), _d.get("verified", False)))
 
         fname = stem_distill(teacher_name, student_arch, rw, n_queries, T, dist_epochs, dist_lr, delta_logit, vT=verify_temperature, tag=tag)
         save_result({
@@ -568,15 +619,18 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
                             delta_logit=2.0, beta=0.4, delta_min=0.5,
                             verify_temperature=5.0,
                             label_mode="soft", trigger_mode="rec_trigger",
-                            own_trigger_size=0, rec_trigger_size=0, tag=""):
+                            own_trigger_size=0, rec_trigger_size=0,
+                            own_data_source="trainset", tag=""):
     """
     Table VII: Surrogate Fine-Tuning Attack.
 
     Args:
         label_mode: "soft" or "hard" — controls the initial distillation method.
         trigger_mode: "rec_trigger" = use original trigger set,
-                      "own_trigger" = reconstruct from testset (Owner's data),
+                      "own_trigger" = reconstruct from Owner's data,
                       "both" = run both for comparison.
+        own_data_source: "trainset" (default — overlaps with D_eval) or
+                         "testset" (true zero-leakage probe).
     """
     nc = config["num_classes"]
 
@@ -694,14 +748,18 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
             # No Phi(x) filtering — every sample is a trigger candidate
             # No latent extractor needed
             if t_mode == "own_trigger":
-                own_loader = DataLoader(trainset, batch_size=64, shuffle=False, num_workers=2)
+                if own_data_source == "testset" and testset is not None:
+                    own_ds = testset
+                else:
+                    own_ds = trainset
+                own_loader = DataLoader(own_ds, batch_size=64, shuffle=False, num_workers=2)
                 vr_base = verify_own_data_and_format(
                     model, own_loader, surrogate,
                     Kw, rw, nc, ext, latent_layer,
                     delta_logit, beta, eta, device, verify_temperature,
                     max_triggers=own_trigger_size)
                 trigger_size_used = vr_base["n_trigger"]
-                trigger_pool_size = len(trainset)
+                trigger_pool_size = len(own_ds)
             else:
                 # Cap recorded triggers if rec_trigger_size > 0
                 use_triggers = triggers
@@ -716,6 +774,15 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
                 acc_base*100, trigger_size_used, trigger_pool_size,
                 vr_base["confidence_shift"],
                 vr_base["p_value"], vr_base["verified"], t_mode))
+            _ad = vr_base.get("all_designs") or {}
+            for _k in ("single_ctrl", "mean_rest", "suspect_top1"):
+                _d = _ad.get(_k)
+                if _d is None:
+                    continue
+                print("    [{:<12s}] shift={:+.5f}  median={:+.5f}  p={:.2e}  V={}".format(
+                    _k, _d.get("confidence_shift", 0.0),
+                    _d.get("median_shift", 0.0),
+                    _d.get("p_value", 1.0), _d.get("verified", False)))
 
             ft_results = []
             for frac in ft_fractions:
@@ -914,12 +981,18 @@ def main():
 
     pa.add_argument("--own_trigger_size", type=int, default=0,
                     help="Number of own triggers to collect for own_trigger verification. "
-                         "0 = collect all from testset. "
-                         "Scans testset until this many triggers are found.")
+                         "0 = collect all from the chosen data source. "
+                         "Scans until this many triggers are found.")
 
     pa.add_argument("--rec_trigger_size", type=int, default=0,
                     help="Number of recorded triggers to use for rec_trigger verification. "
                          "0 = use all recorded triggers.")
+
+    pa.add_argument("--own_data_source", default="trainset",
+                    choices=["trainset", "testset"],
+                    help="Which Owner-side dataset feeds own_trigger reconstruction. "
+                         "'trainset' (default) overlaps with D_eval. "
+                         "'testset' is the true zero-leakage probe.")
 
     pa.add_argument("--epsilons", type=str, default="1,10,50,100,200")
 
@@ -944,7 +1017,7 @@ def main():
     print("  Device: {}".format(a.device))
     print("  Experiment: {}".format(a.experiment))
     print("  Label mode: {}".format(a.label_mode))
-    print("  Trigger mode: {}".format(a.trigger_mode))
+    print("  Trigger mode: {} (own_data_source={})".format(a.trigger_mode, a.own_data_source))
     print("  rw={}, delta_logit={}, beta={}, delta_min={}, verify_T={}".format(
         a.rw, a.delta_logit, a.beta, a.delta_min, a.verify_temperature))
     print("  tag={}".format(a.tag if a.tag else "(none)"))
@@ -998,7 +1071,9 @@ def main():
                                     verify_temperature=a.verify_temperature,
                                     label_mode=lm, trigger_mode=a.trigger_mode,
                                     own_trigger_size=a.own_trigger_size,
-                                    rec_trigger_size=a.rec_trigger_size, tag=a.tag)
+                                    rec_trigger_size=a.rec_trigger_size,
+                                    own_data_source=a.own_data_source,
+                                    tag=a.tag)
 
     if a.experiment in ("overhead", "all"):
         experiment_overhead(model, testloader, a.device, a.epsilon, a.delta,

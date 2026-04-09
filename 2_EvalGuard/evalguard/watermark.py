@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hmac
 import hashlib
+import math
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict
 from scipy import stats
@@ -506,6 +507,209 @@ def _empty_verification_result(eta, vT, mode="paired_wilcoxon"):
         "confidence_shift": 0.0, "n_trigger": 0, "n_control": 0, "n_pairs": 0,
         "eta": eta, "verify_temperature": vT,
     }
+
+
+# ============================================================
+# Multi-design verification (diagnostic)
+# ============================================================
+#
+# The original paired Wilcoxon verification uses a SINGLE control class per
+# top-1 class (derive_control_class). With only C distinct (target, control)
+# pairs (one per top-1), any structural class-similarity bias between the
+# learned representation and the HMAC-derived control can either hide or
+# invert the watermark signal — especially when the watermark signal is weak
+# (e.g. high distillation temperature, small delta_logit).
+#
+# verify_ownership_all_designs runs three orthogonal control designs on the
+# SAME forward pass, so a single verification call reports:
+#   A. single_ctrl   — the original design (for backward compatibility)
+#   B. mean_rest     — p[target] vs mean(p over all classes != top1, target)
+#   C. suspect_top1  — re-derive BOTH target and control using the suspect
+#                      model's own argmax (fair when teacher and suspect
+#                      disagree, which happens in own_trigger mode).
+#
+# Comparing A/B/C lets you tell "no signal learned" from "single-control
+# class-bias artefact".
+
+def _wilcoxon_paired(trig: np.ndarray, ctrl: np.ndarray, label: str,
+                     eta: float, vT: float) -> Dict:
+    diffs = trig - ctrl
+    try:
+        r = stats.wilcoxon(diffs, alternative='greater', zero_method='wilcox')
+        stat_val = float(r.statistic)
+        p_value = float(r.pvalue)
+    except ValueError:
+        stat_val, p_value = 0.0, 1.0
+    return {
+        "verified": p_value < eta,
+        "p_value": p_value,
+        "log10_p_value": round(math.log10(max(p_value, 1e-300)), 2),
+        "test": "wilcoxon_signed_rank",
+        "statistic": stat_val,
+        "control_design": label,
+        "mean_trigger_conf": round(float(trig.mean()), 6),
+        "mean_control_conf": round(float(ctrl.mean()), 6),
+        "confidence_shift": round(float(diffs.mean()), 6),
+        "median_shift": round(float(np.median(diffs)), 6),
+        "n_trigger": int(len(trig)),
+        "n_control": int(len(ctrl)),
+        "n_pairs": int(len(diffs)),
+        "eta": eta,
+        "verify_temperature": vT,
+    }
+
+
+def verify_ownership_all_designs(
+    trigger_set: List[TriggerEntry],
+    suspect_model: nn.Module,
+    K_w: bytes,
+    num_classes: int = 10,
+    eta: float = 2 ** (-64),
+    device: str = "cpu",
+    verify_temperature: float = 5.0,
+    batch_size: int = 64,
+) -> Dict:
+    """
+    Run Wilcoxon paired verification under THREE different control designs
+    on the SAME forward pass, to disentangle single-control class-bias from
+    a true absence of watermark signal.
+
+    Designs (all one-sided Wilcoxon signed-rank, alternative='greater'):
+      A 'single_ctrl':  original — derive_control_class(K_w, entry.top1_class).
+                        One deterministic control per top-1 class.
+      B 'mean_rest':    p[target] - mean(p[c]) over c != top1 != target.
+                        Robust to per-class natural bias of a single control.
+      C 'suspect_top1': re-derive target AND control using the suspect model's
+                        own argmax on the sample. Fair when teacher and suspect
+                        disagree (important for own_trigger mode).
+
+    Returns {'single_ctrl', 'mean_rest', 'suspect_top1'} where each value is
+    a dict with the same fields as verify_ownership() paired mode, plus
+    'control_design' and 'median_shift'.
+    """
+    suspect_model.to(device).eval()
+    vT = verify_temperature
+    n = len(trigger_set)
+    if n == 0:
+        empty = _empty_verification_result(eta, vT, mode="paired_wilcoxon")
+        return {
+            "single_ctrl":  dict(empty, control_design="single_ctrl"),
+            "mean_rest":    dict(empty, control_design="mean_rest"),
+            "suspect_top1": dict(empty, control_design="suspect_top1"),
+        }
+
+    # Single forward pass over all triggers; keep full probability vectors.
+    all_probs = np.zeros((n, num_classes), dtype=np.float64)
+    with torch.no_grad():
+        for start in range(0, n, batch_size):
+            end = min(start + batch_size, n)
+            batch_entries = trigger_set[start:end]
+            batch_x = torch.stack([
+                e.query if isinstance(e.query, torch.Tensor)
+                else torch.tensor(e.query)
+                for e in batch_entries
+            ]).to(device)
+            logits = suspect_model(batch_x)
+            probs = torch.softmax(logits / vT, dim=-1).cpu().numpy()
+            all_probs[start:end] = probs
+
+    suspect_top1 = all_probs.argmax(axis=1)
+
+    A_trig = np.empty(n, dtype=np.float64)
+    A_ctrl = np.empty(n, dtype=np.float64)
+    B_trig = np.empty(n, dtype=np.float64)
+    B_ctrl = np.empty(n, dtype=np.float64)
+    C_trig = np.empty(n, dtype=np.float64)
+    C_ctrl = np.empty(n, dtype=np.float64)
+
+    # Cache per-top1 derivations to avoid repeated HMACs
+    target_cache: Dict[int, int] = {}
+    control_cache: Dict[int, int] = {}
+
+    def _target(c: int) -> int:
+        if c not in target_cache:
+            target_cache[c] = derive_target_class(K_w, c, num_classes)
+        return target_cache[c]
+
+    def _control(c: int) -> int:
+        if c not in control_cache:
+            control_cache[c] = derive_control_class(K_w, c, num_classes)
+        return control_cache[c]
+
+    for i, entry in enumerate(trigger_set):
+        # Design A: original single control
+        cc_A = _control(entry.top1_class)
+        A_trig[i] = all_probs[i, entry.target_class]
+        A_ctrl[i] = all_probs[i, cc_A]
+
+        # Design B: mean over all classes except top1 and target
+        row = all_probs[i]
+        denom = num_classes - 2
+        rest_sum = row.sum() - row[entry.top1_class] - row[entry.target_class]
+        B_trig[i] = row[entry.target_class]
+        B_ctrl[i] = rest_sum / denom
+
+        # Design C: re-derive target & control from suspect top1
+        st1 = int(suspect_top1[i])
+        tgt_C = _target(st1)
+        cc_C = _control(st1)
+        C_trig[i] = row[tgt_C]
+        C_ctrl[i] = row[cc_C]
+
+    return {
+        "single_ctrl":  _wilcoxon_paired(A_trig, A_ctrl, "single_ctrl",  eta, vT),
+        "mean_rest":    _wilcoxon_paired(B_trig, B_ctrl, "mean_rest",    eta, vT),
+        "suspect_top1": _wilcoxon_paired(C_trig, C_ctrl, "suspect_top1", eta, vT),
+    }
+
+
+def verify_ownership_own_data_all_designs(
+    owner_model: nn.Module,
+    own_dataloader,
+    suspect_model: nn.Module,
+    K_w: bytes,
+    num_classes: int,
+    eta: float = 2 ** (-64),
+    device: str = "cpu",
+    verify_temperature: float = 5.0,
+    max_triggers: int = 0,
+) -> Dict:
+    """
+    Own-data all-designs variant:
+      1. Reconstruct triggers from owner_model's data (no Phi(x) filter —
+         every sample becomes a candidate, see reconstruct_triggers_from_own_data).
+      2. Verify against suspect_model under the three control designs.
+
+    Returns {'single_ctrl', 'mean_rest', 'suspect_top1'} each with
+    'trigger_source'='own_trigger' and 'n_own_data_scanned' populated.
+    """
+    triggers = reconstruct_triggers_from_own_data(
+        owner_model, own_dataloader, K_w,
+        r_w=0.0, num_classes=num_classes,
+        latent_extractor=None, layer_name="",
+        delta_logit=0.0, beta=0.0,
+        device=device, max_triggers=max_triggers,
+    )
+
+    if len(triggers) == 0:
+        empty = _empty_verification_result(eta, verify_temperature, mode="paired_wilcoxon")
+        stub = dict(empty, trigger_source="own_trigger", n_own_data_scanned=0)
+        return {
+            "single_ctrl":  dict(stub, control_design="single_ctrl"),
+            "mean_rest":    dict(stub, control_design="mean_rest"),
+            "suspect_top1": dict(stub, control_design="suspect_top1"),
+        }
+
+    out = verify_ownership_all_designs(
+        triggers, suspect_model,
+        K_w=K_w, num_classes=num_classes,
+        eta=eta, device=device,
+        verify_temperature=verify_temperature,
+    )
+    for k in out:
+        out[k]["trigger_source"] = "own_trigger"
+        out[k]["n_own_data_scanned"] = len(triggers)
+    return out
 
 
 # ============================================================

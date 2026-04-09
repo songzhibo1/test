@@ -24,20 +24,10 @@ Table VII: Surrogate Fine-Tuning Attack [SOFT]
   rw=0.05, dist_epochs=80, ft_epochs=20, ft_lr=0.0005, ft_fractions=[0.0, 0.01, 0.05, 0.1]
   delta_logit=7.0, beta=0.5, label_mode=soft
 ============================================================
+Using cache found in /jty/sny1/.cache/torch/hub/chenyaofo_pytorch-cifar-models_master
 
 --- T=5 [soft-label] ---
-  No cache. Distilling (soft)...
-Using cache found in /jty/sny1/.cache/torch/hub/chenyaofo_pytorch-cifar-models_master
-    Distillation epoch 10/80, Loss: 2.3733
-    Distillation epoch 20/80, Loss: 1.2405
-    Distillation epoch 30/80, Loss: 0.8449
-    Distillation epoch 40/80, Loss: 0.6351
-    Distillation epoch 50/80, Loss: 0.4880
-    Distillation epoch 60/80, Loss: 0.4005
-    Distillation epoch 70/80, Loss: 0.3588
-    Distillation epoch 80/80, Loss: 0.3416
-  -> Cached: checkpoints/distill/cifar10/resnet20_resnet20/soft_label/v6__T_resnet20__S_resnet20__rw0.05__nq50000__T5__distEp80__distLr0.002__d7.0__tag_diag_scan_d7.0.pt (+ .pkl, .key)
-  -> Saved: results/distill/cifar10/resnet20_resnet20/soft_label/T_resnet20__S_resnet20__rw0.05__nq50000__T5__distEp80__distLr0.002__d7.0__vT5.0__tag_diag_scan_d7.0.json
+  -> Loaded cache: checkpoints/distill/cifar10/resnet20_resnet20/soft_label/v6__T_resnet20__S_resnet20__rw0.05__nq50000__T5__distEp80__distLr0.002__d7.0__tag_diag_scan_d7.0.pt (K_w=fe1a4c5b0107...)
 
   --- Verification: trigger_mode=rec_trigger ---
   Base: acc=84.3%, triggers=2482/2482, shift=0.0068, p=1.16e-32, V=True [rec_trigger]
@@ -45,15 +35,15 @@ Using cache found in /jty/sny1/.cache/torch/hub/chenyaofo_pytorch-cifar-models_m
     [mean_rest   ] shift=+0.00569  median=+0.00024  p=2.39e-06  V=False
     [suspect_top1] shift=+0.00667  median=+0.00408  p=2.93e-32  V=True
     FT baseline: acc=84.3%, shift=0.0068, p=1.16e-32, V=True [rec_trigger]
-    FT epoch 10/20, Loss: 0.3606
-    FT epoch 20/20, Loss: 0.3644
-    FT 1% (500): acc=84.4%, shift=0.0053, p=2.36e-24, V=True [rec_trigger]
-    FT epoch 10/20, Loss: 0.4544
-    FT epoch 20/20, Loss: 0.4176
-    FT 5% (2500): acc=84.0%, shift=0.0046, p=1.53e-18, V=False [rec_trigger]
-    FT epoch 10/20, Loss: 0.4640
-    FT epoch 20/20, Loss: 0.4041
-    FT 10% (5000): acc=84.0%, shift=0.0052, p=4.54e-18, V=False [rec_trigger]
+    FT epoch 10/20, Loss: 0.3551
+    FT epoch 20/20, Loss: 0.3181
+    FT 1% (500): acc=84.1%, shift=0.0053, p=1.32e-25, V=True [rec_trigger]
+    FT epoch 10/20, Loss: 0.4717
+    FT epoch 20/20, Loss: 0.4333
+    FT 5% (2500): acc=84.4%, shift=0.0054, p=3.13e-24, V=True [rec_trigger]
+    FT epoch 10/20, Loss: 0.4835
+    FT epoch 20/20, Loss: 0.4542
+    FT 10% (5000): acc=84.2%, shift=0.0053, p=2.76e-22, V=True [rec_trigger]
   -> Saved: results/surrogate_ft/cifar10/resnet20_resnet20/soft_label__rec_trigger/T_resnet20__S_resnet20__rw0.05__nq50000__T5__distEp80__distLr0.002__ftEp20__ftLr0.0005__d7.0__vT5.0__trig_rec2482__tag_diag_scan_d7.0.json
 
 Results: ./results/surrogate_ft/cifar10/   Checkpoints: ./checkpoints/distill/cifar10/

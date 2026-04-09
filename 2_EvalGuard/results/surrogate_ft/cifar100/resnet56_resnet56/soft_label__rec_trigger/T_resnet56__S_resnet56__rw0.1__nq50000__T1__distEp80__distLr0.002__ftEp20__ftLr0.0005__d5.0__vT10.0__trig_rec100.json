@@ -1,0 +1,132 @@
+{
+  "experiment": "surrogate_finetune",
+  "timestamp": "2026-04-01T22:18:07.369903",
+  "dataset": "cifar100",
+  "label_mode": "soft",
+  "trigger_mode": "rec_trigger",
+  "trigger_config": {
+    "trigger_source": "rec_trigger",
+    "trigger_size_used": 100,
+    "trigger_pool_size": 4986,
+    "own_trigger_size": null,
+    "rec_trigger_size": 100
+  },
+  "teacher": {
+    "name": "resnet56",
+    "num_parameters": 861620,
+    "num_parameters_human": "861,620",
+    "accuracy": 0.7261
+  },
+  "student": {
+    "architecture": "resnet56"
+  },
+  "watermark_config": {
+    "r_w": 0.1,
+    "r_w_percent": "10.0%",
+    "delta_logit": 5.0,
+    "beta": 0.7,
+    "num_classes": 100,
+    "method": "logit_space_confidence_shift",
+    "verification": "mann_whitney_u",
+    "verify_temperature": 10.0
+  },
+  "distillation_baseline": {
+    "temperature": 1,
+    "n_queries": 50000,
+    "dist_epochs": 80,
+    "dist_lr": 0.002,
+    "dist_batch": 128,
+    "surrogate_accuracy": 0.5366,
+    "n_triggers_recorded": 4986,
+    "n_triggers_used": 100,
+    "confidence_shift": 0.000127,
+    "mean_trigger_conf": 0.010412,
+    "mean_control_conf": 0.010285,
+    "n_trigger": 100,
+    "n_control": 100,
+    "u_statistic": 4755.0,
+    "p_value": 0.7256975534178469,
+    "log10_p_value": -0.14,
+    "verified": "False",
+    "verify_temperature": 10.0,
+    "trigger_source": "rec_trigger",
+    "label_mode": "soft",
+    "trigger_mode": "rec_trigger"
+  },
+  "ft_config": {
+    "ft_fractions": [
+      0.0,
+      0.01,
+      0.05,
+      0.1
+    ],
+    "ft_epochs": 20,
+    "ft_lr": 0.0005
+  },
+  "ft_results": [
+    {
+      "ft_fraction": 0.0,
+      "ft_samples": 0,
+      "accuracy": 0.5366,
+      "confidence_shift": 0.000127,
+      "mean_trigger_conf": 0.010412,
+      "mean_control_conf": 0.010285,
+      "n_trigger": 100,
+      "n_control": 100,
+      "u_statistic": 4755.0,
+      "p_value": 0.7256975534178469,
+      "log10_p_value": -0.14,
+      "verified": "False",
+      "verify_temperature": 10.0,
+      "trigger_source": "rec_trigger"
+    },
+    {
+      "ft_fraction": 0.01,
+      "ft_samples": 500,
+      "accuracy": 0.536,
+      "confidence_shift": 0.000172,
+      "mean_trigger_conf": 0.010391,
+      "mean_control_conf": 0.010219,
+      "n_trigger": 100,
+      "n_control": 100,
+      "u_statistic": 4772.0,
+      "p_value": 0.7116851298250593,
+      "log10_p_value": -0.15,
+      "verified": "False",
+      "verify_temperature": 10.0,
+      "trigger_source": "rec_trigger"
+    },
+    {
+      "ft_fraction": 0.05,
+      "ft_samples": 2500,
+      "accuracy": 0.5415,
+      "confidence_shift": 0.000168,
+      "mean_trigger_conf": 0.010305,
+      "mean_control_conf": 0.010137,
+      "n_trigger": 100,
+      "n_control": 100,
+      "u_statistic": 4770.0,
+      "p_value": 0.7133510361292943,
+      "log10_p_value": -0.15,
+      "verified": "False",
+      "verify_temperature": 10.0,
+      "trigger_source": "rec_trigger"
+    },
+    {
+      "ft_fraction": 0.1,
+      "ft_samples": 5000,
+      "accuracy": 0.5461,
+      "confidence_shift": 0.00011,
+      "mean_trigger_conf": 0.010309,
+      "mean_control_conf": 0.010199,
+      "n_trigger": 100,
+      "n_control": 100,
+      "u_statistic": 4763.0,
+      "p_value": 0.7191454749236529,
+      "log10_p_value": -0.14,
+      "verified": "False",
+      "verify_temperature": 10.0,
+      "trigger_source": "rec_trigger"
+    }
+  ]
+}

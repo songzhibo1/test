@@ -27,37 +27,33 @@ Table VII: Surrogate Fine-Tuning Attack [SOFT]
 
 --- T=3 [soft-label] ---
   No cache. Distilling (soft)...
-Traceback (most recent call last):
-  File "/jty/sny1/code/2_EvalGuard/experiments.py", line 1087, in <module>
-    main()
-  File "/jty/sny1/code/2_EvalGuard/experiments.py", line 1064, in main
-    experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, a.device,
-  File "/jty/sny1/code/2_EvalGuard/experiments.py", line 683, in experiment_surrogate_ft
-    surrogate = create_student(nc, student_arch)
-  File "/jty/sny1/code/2_EvalGuard/evalguard/configs.py", line 183, in create_student
-    return torch.hub.load("chenyaofo/pytorch-cifar-models", hub_name, pretrained=False)
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/site-packages/torch/hub.py", line 638, in load
-    repo_or_dir = _get_cache_or_reload(
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/site-packages/torch/hub.py", line 229, in _get_cache_or_reload
-    repo_owner, repo_name, ref = _parse_repo_info(github)
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/site-packages/torch/hub.py", line 161, in _parse_repo_info
-    with urlopen(f"https://github.com/{repo_owner}/{repo_name}/tree/main/"):
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 216, in urlopen
-    return opener.open(url, data, timeout)
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 519, in open
-    response = self._open(req, data)
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 536, in _open
-    result = self._call_chain(self.handle_open, protocol, protocol +
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 496, in _call_chain
-    result = func(*args)
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 1391, in https_open
-    return self.do_open(http.client.HTTPSConnection, req,
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 1352, in do_open
-    r = h.getresponse()
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/http/client.py", line 1395, in getresponse
-    response.begin()
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/http/client.py", line 323, in begin
-    version, status, reason = self._read_status()
-  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/http/client.py", line 292, in _read_status
-    raise RemoteDisconnected("Remote end closed connection without"
-http.client.RemoteDisconnected: Remote end closed connection without response
+Using cache found in /jty/sny1/.cache/torch/hub/chenyaofo_pytorch-cifar-models_master
+    Distillation epoch 10/80, Loss: 1.8054
+    Distillation epoch 20/80, Loss: 0.8201
+    Distillation epoch 30/80, Loss: 0.5217
+    Distillation epoch 40/80, Loss: 0.3725
+    Distillation epoch 50/80, Loss: 0.2772
+    Distillation epoch 60/80, Loss: 0.2190
+    Distillation epoch 70/80, Loss: 0.1881
+    Distillation epoch 80/80, Loss: 0.1761
+  -> Cached: checkpoints/distill/cifar10/resnet20_resnet20/soft_label/v6__T_resnet20__S_resnet20__rw0.05__nq50000__T3__distEp80__distLr0.002__d2.0__tag_diag_own_test_T3.pt (+ .pkl, .key)
+  -> Saved: results/distill/cifar10/resnet20_resnet20/soft_label/T_resnet20__S_resnet20__rw0.05__nq50000__T3__distEp80__distLr0.002__d2.0__vT5.0__tag_diag_own_test_T3.json
+
+  --- Verification: trigger_mode=own_trigger ---
+  Base: acc=84.8%, triggers=10000/10000, shift=-0.0043, p=2.23e-19, V=False [own_trigger]
+    [single_ctrl ] shift=-0.00429  median=+0.00280  p=2.23e-19  V=False
+    [mean_rest   ] shift=-0.00380  median=-0.00608  p=1.00e+00  V=False
+    [suspect_top1] shift=-0.00303  median=+0.00265  p=1.43e-15  V=False
+    FT baseline: acc=84.8%, shift=-0.0043, p=2.23e-19, V=False [own_trigger]
+    FT epoch 10/20, Loss: 0.3859
+    FT epoch 20/20, Loss: 0.3494
+    FT 1% (500): acc=84.6%, shift=-0.0037, p=2.26e-13, V=False [own_trigger]
+    FT epoch 10/20, Loss: 0.5084
+    FT epoch 20/20, Loss: 0.4417
+    FT 5% (2500): acc=84.6%, shift=-0.0042, p=2.18e-15, V=False [own_trigger]
+    FT epoch 10/20, Loss: 0.4287
+    FT epoch 20/20, Loss: 0.4489
+    FT 10% (5000): acc=84.8%, shift=-0.0048, p=2.96e-08, V=False [own_trigger]
+  -> Saved: results/surrogate_ft/cifar10/resnet20_resnet20/soft_label__own_trigger/T_resnet20__S_resnet20__rw0.05__nq50000__T3__distEp80__distLr0.002__ftEp20__ftLr0.0005__d2.0__vT5.0__trig_own10000__tag_diag_own_test_T3.json
+
+Results: ./results/surrogate_ft/cifar10/   Checkpoints: ./checkpoints/distill/cifar10/

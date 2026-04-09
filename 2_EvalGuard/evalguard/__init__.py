@@ -33,6 +33,8 @@ if _il.util.find_spec("torch") is not None:
         LatentExtractor,
         TriggerEntry,
         verify_ownership,
+        verify_ownership_all_designs,
+        verify_ownership_own_data_all_designs,
         derive_target_class,
         derive_control_class,
     )
@@ -43,6 +45,8 @@ __all__ = [
     "recover_weights", "SecretPackage",
     "compute_sigma", "compute_l2_sensitivity",
     "WatermarkModule", "LatentExtractor", "TriggerEntry",
-    "verify_ownership", "derive_target_class", "derive_control_class",
+    "verify_ownership",
+    "verify_ownership_all_designs", "verify_ownership_own_data_all_designs",
+    "derive_target_class", "derive_control_class",
     "binomial_p_value", "mannwhitney_p_value",
 ]

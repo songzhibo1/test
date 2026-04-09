@@ -35,15 +35,15 @@ Using cache found in /jty/sny1/.cache/torch/hub/chenyaofo_pytorch-cifar-models_m
     [mean_rest   ] shift=+0.00124  median=-0.00441  p=1.00e+00  V=False
     [suspect_top1] shift=-0.00000  median=-0.00185  p=1.00e+00  V=False
     FT baseline: acc=84.3%, shift=0.0001, p=1.00e+00, V=False [rec_trigger]
-    FT epoch 10/20, Loss: 0.3716
-    FT epoch 20/20, Loss: 0.3502
-    FT 1% (500): acc=84.5%, shift=-0.0001, p=1.00e+00, V=False [rec_trigger]
-    FT epoch 10/20, Loss: 0.4974
-    FT epoch 20/20, Loss: 0.4517
-    FT 5% (2500): acc=84.6%, shift=0.0011, p=9.99e-01, V=False [rec_trigger]
-    FT epoch 10/20, Loss: 0.5190
-    FT epoch 20/20, Loss: 0.4446
-    FT 10% (5000): acc=84.3%, shift=0.0009, p=1.00e+00, V=False [rec_trigger]
+    FT epoch 10/20, Loss: 0.3722
+    FT epoch 20/20, Loss: 0.4607
+    FT 1% (500): acc=84.5%, shift=-0.0003, p=1.00e+00, V=False [rec_trigger]
+    FT epoch 10/20, Loss: 0.4944
+    FT epoch 20/20, Loss: 0.4277
+    FT 5% (2500): acc=84.4%, shift=0.0008, p=9.99e-01, V=False [rec_trigger]
+    FT epoch 10/20, Loss: 0.4758
+    FT epoch 20/20, Loss: 0.4436
+    FT 10% (5000): acc=84.2%, shift=0.0007, p=9.90e-01, V=False [rec_trigger]
   -> Saved: results/surrogate_ft/cifar10/resnet20_resnet20/soft_label__rec_trigger/T_resnet20__S_resnet20__rw0.05__nq50000__T5__distEp80__distLr0.002__ftEp20__ftLr0.0005__d2.0__vT5.0__trig_rec2492__tag_diag_scan_d2.0.json
 
 Results: ./results/surrogate_ft/cifar10/   Checkpoints: ./checkpoints/distill/cifar10/
