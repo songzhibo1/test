@@ -1,0 +1,63 @@
+Using cache found in /jty/sny1/.cache/torch/hub/chenyaofo_pytorch-cifar-models_master
+============================================================
+EvalGuard Experiment Runner (v5 - Logit-Space Shift)
+  Dataset: cifar10
+  Teacher: resnet20 (config: cifar10_resnet20)
+  Student: resnet20
+  Device: cuda
+  Experiment: surrogate_ft
+  Label mode: soft
+  Trigger mode: rec_trigger (own_data_source=trainset)
+  rw=0.05, delta_logit=5.0, beta=0.5, delta_min=0.5, verify_T=5.0
+  tag=diag_scan_d5.0
+  dist: epochs=80, lr=0.002, batch=128
+  ft: epochs=20, lr=0.0005, fractions=[0.0, 0.01, 0.05, 0.1]
+  temperatures=[5]
+============================================================
+[INFO] Loading CIFAR-10 ResNet-20 via torch.hub...
+Baseline accuracy: 92.59%
+
+
+============================================================
+Table VII: Surrogate Fine-Tuning Attack [SOFT]
+  Dataset: cifar10, T: resnet20 -> S: resnet20
+  rw=0.05, dist_epochs=80, ft_epochs=20, ft_lr=0.0005, ft_fractions=[0.0, 0.01, 0.05, 0.1]
+  delta_logit=5.0, beta=0.5, label_mode=soft
+============================================================
+
+--- T=5 [soft-label] ---
+  No cache. Distilling (soft)...
+Traceback (most recent call last):
+  File "/jty/sny1/code/2_EvalGuard/experiments.py", line 1087, in <module>
+    main()
+  File "/jty/sny1/code/2_EvalGuard/experiments.py", line 1064, in main
+    experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, a.device,
+  File "/jty/sny1/code/2_EvalGuard/experiments.py", line 683, in experiment_surrogate_ft
+    surrogate = create_student(nc, student_arch)
+  File "/jty/sny1/code/2_EvalGuard/evalguard/configs.py", line 183, in create_student
+    return torch.hub.load("chenyaofo/pytorch-cifar-models", hub_name, pretrained=False)
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/site-packages/torch/hub.py", line 638, in load
+    repo_or_dir = _get_cache_or_reload(
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/site-packages/torch/hub.py", line 229, in _get_cache_or_reload
+    repo_owner, repo_name, ref = _parse_repo_info(github)
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/site-packages/torch/hub.py", line 161, in _parse_repo_info
+    with urlopen(f"https://github.com/{repo_owner}/{repo_name}/tree/main/"):
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 216, in urlopen
+    return opener.open(url, data, timeout)
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 519, in open
+    response = self._open(req, data)
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 536, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 496, in _call_chain
+    result = func(*args)
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 1391, in https_open
+    return self.do_open(http.client.HTTPSConnection, req,
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/urllib/request.py", line 1352, in do_open
+    r = h.getresponse()
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/http/client.py", line 1395, in getresponse
+    response.begin()
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/http/client.py", line 323, in begin
+    version, status, reason = self._read_status()
+  File "/jty/sny1/miniconda3/envs/evalguard/lib/python3.10/http/client.py", line 292, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+http.client.RemoteDisconnected: Remote end closed connection without response

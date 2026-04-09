@@ -1,0 +1,76 @@
+Using cache found in /jty/sny1/.cache/torch/hub/chenyaofo_pytorch-cifar-models_master
+============================================================
+EvalGuard Experiment Runner (v5 - Logit-Space Shift)
+  Dataset: cifar10
+  Teacher: resnet20 (config: cifar10_resnet20)
+  Student: resnet20
+  Device: cuda
+  Experiment: surrogate_ft
+  Label mode: soft
+  Trigger mode: both (own_data_source=trainset)
+  rw=0.05, delta_logit=2.0, beta=0.3, delta_min=0.5, verify_T=5.0
+  tag=diag_repro_T5
+  dist: epochs=80, lr=0.002, batch=128
+  ft: epochs=20, lr=0.0005, fractions=[0.0, 0.01, 0.05, 0.1]
+  temperatures=[5]
+============================================================
+[INFO] Loading CIFAR-10 ResNet-20 via torch.hub...
+Baseline accuracy: 92.59%
+
+
+============================================================
+Table VII: Surrogate Fine-Tuning Attack [SOFT]
+  Dataset: cifar10, T: resnet20 -> S: resnet20
+  rw=0.05, dist_epochs=80, ft_epochs=20, ft_lr=0.0005, ft_fractions=[0.0, 0.01, 0.05, 0.1]
+  delta_logit=2.0, beta=0.3, label_mode=soft
+============================================================
+
+--- T=5 [soft-label] ---
+  No cache. Distilling (soft)...
+Using cache found in /jty/sny1/.cache/torch/hub/chenyaofo_pytorch-cifar-models_master
+    Distillation epoch 10/80, Loss: 2.4504
+    Distillation epoch 20/80, Loss: 1.2767
+    Distillation epoch 30/80, Loss: 0.8615
+    Distillation epoch 40/80, Loss: 0.6201
+    Distillation epoch 50/80, Loss: 0.4740
+    Distillation epoch 60/80, Loss: 0.3842
+    Distillation epoch 70/80, Loss: 0.3420
+    Distillation epoch 80/80, Loss: 0.3211
+  -> Cached: checkpoints/distill/cifar10/resnet20_resnet20/soft_label/v6__T_resnet20__S_resnet20__rw0.05__nq50000__T5__distEp80__distLr0.002__d2.0__tag_diag_repro_T5.pt (+ .pkl, .key)
+  -> Saved: results/distill/cifar10/resnet20_resnet20/soft_label/T_resnet20__S_resnet20__rw0.05__nq50000__T5__distEp80__distLr0.002__d2.0__vT5.0__tag_diag_repro_T5.json
+
+  --- Verification: trigger_mode=rec_trigger ---
+  Base: acc=84.4%, triggers=2480/2480, shift=0.0006, p=9.80e-01, V=False [rec_trigger]
+    [single_ctrl ] shift=+0.00062  median=-0.00124  p=9.80e-01  V=False
+    [mean_rest   ] shift=+0.00251  median=-0.00349  p=1.00e+00  V=False
+    [suspect_top1] shift=+0.00051  median=-0.00124  p=9.82e-01  V=False
+    FT baseline: acc=84.4%, shift=0.0006, p=9.80e-01, V=False [rec_trigger]
+    FT epoch 10/20, Loss: 0.3697
+    FT epoch 20/20, Loss: 0.5020
+    FT 1% (500): acc=84.4%, shift=0.0006, p=9.71e-01, V=False [rec_trigger]
+    FT epoch 10/20, Loss: 0.5205
+    FT epoch 20/20, Loss: 0.4441
+    FT 5% (2500): acc=84.2%, shift=0.0004, p=9.20e-01, V=False [rec_trigger]
+    FT epoch 10/20, Loss: 0.4836
+    FT epoch 20/20, Loss: 0.4627
+    FT 10% (5000): acc=84.7%, shift=0.0020, p=5.96e-02, V=False [rec_trigger]
+  -> Saved: results/surrogate_ft/cifar10/resnet20_resnet20/soft_label__rec_trigger/T_resnet20__S_resnet20__rw0.05__nq50000__T5__distEp80__distLr0.002__ftEp20__ftLr0.0005__d2.0__vT5.0__trig_rec2480__tag_diag_repro_T5.json
+
+  --- Verification: trigger_mode=own_trigger ---
+  Base: acc=84.4%, triggers=50000/50000, shift=-0.0040, p=1.00e+00, V=False [own_trigger]
+    [single_ctrl ] shift=-0.00402  median=-0.00218  p=1.00e+00  V=False
+    [mean_rest   ] shift=-0.00145  median=-0.00722  p=1.00e+00  V=False
+    [suspect_top1] shift=-0.00270  median=-0.00218  p=1.00e+00  V=False
+    FT baseline: acc=84.4%, shift=-0.0040, p=1.00e+00, V=False [own_trigger]
+    FT epoch 10/20, Loss: 0.5061
+    FT epoch 20/20, Loss: 0.3550
+    FT 1% (500): acc=84.4%, shift=-0.0030, p=1.00e+00, V=False [own_trigger]
+    FT epoch 10/20, Loss: 0.5147
+    FT epoch 20/20, Loss: 0.4681
+    FT 5% (2500): acc=84.5%, shift=-0.0050, p=1.00e+00, V=False [own_trigger]
+    FT epoch 10/20, Loss: 0.4884
+    FT epoch 20/20, Loss: 0.4218
+    FT 10% (5000): acc=84.8%, shift=-0.0028, p=1.00e+00, V=False [own_trigger]
+  -> Saved: results/surrogate_ft/cifar10/resnet20_resnet20/soft_label__own_trigger/T_resnet20__S_resnet20__rw0.05__nq50000__T5__distEp80__distLr0.002__ftEp20__ftLr0.0005__d2.0__vT5.0__trig_own50000__tag_diag_repro_T5.json
+
+Results: ./results/surrogate_ft/cifar10/   Checkpoints: ./checkpoints/distill/cifar10/
