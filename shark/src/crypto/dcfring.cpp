@@ -267,5 +267,189 @@ namespace shark
 
             return std::make_tuple(out_ring, out_tag);
         }
+
+        // ============================================================
+        // Semi-honest version (no MAC tags)
+        // ============================================================
+
+        void convert_sh(const block &in, u64 &out_ring)
+        {
+            block ct;
+            ct = ak4.ecbEncBlock(in) ^ in;
+            out_ring = *(u64 *)&ct;
+        }
+
+        std::pair<DCFRingKeySH, DCFRingKeySH> dcfring_gen_sh(int bin, const u64 alpha, const bool greaterThan)
+        {
+            u64 payload_ring = 1;
+
+            auto s = protocols::rand<std::array<block, 2>>();
+            block si[2][2];
+            block vi[2][2];
+
+            u64 v_alpha_ring = 0;
+
+            shark::span<block> k0(bin + 1);
+            shark::span<block> k1(bin + 1);
+
+            shark::span<u64> v0_ring(bin);
+
+            s[0] = (s[0] & notOneBlock) ^ ((s[1] & OneBlock) ^ OneBlock);
+            k0[0] = s[0];
+            k1[0] = s[1];
+
+            u64 vi_00_converted_ring;
+            u64 vi_01_converted_ring;
+            u64 vi_10_converted_ring;
+            u64 vi_11_converted_ring;
+
+            for (int i = 0; i < bin; ++i)
+            {
+                const u8 keep = static_cast<uint8_t>(alpha >> (bin - 1 - i)) & 1;
+                auto a = toBlock(keep);
+
+                auto ss0 = s[0] & notThreeBlock;
+                auto ss1 = s[1] & notThreeBlock;
+
+                si[0][0] = ak0.ecbEncBlock(ss0) ^ ss0;
+                si[0][1] = ak1.ecbEncBlock(ss0) ^ ss0;
+                vi[0][0] = ak2.ecbEncBlock(ss0) ^ ss0;
+                vi[0][1] = ak3.ecbEncBlock(ss0) ^ ss0;
+                si[1][0] = ak0.ecbEncBlock(ss1) ^ ss1;
+                si[1][1] = ak1.ecbEncBlock(ss1) ^ ss1;
+                vi[1][0] = ak2.ecbEncBlock(ss1) ^ ss1;
+                vi[1][1] = ak3.ecbEncBlock(ss1) ^ ss1;
+
+                auto ti0 = lsb(s[0]);
+                auto ti1 = lsb(s[1]);
+                u64 sign = 1;
+                if (ti1 == 1) sign = -sign;
+
+                convert_sh(vi[0][keep], vi_00_converted_ring);
+                convert_sh(vi[1][keep], vi_10_converted_ring);
+                convert_sh(vi[0][keep ^ 1], vi_01_converted_ring);
+                convert_sh(vi[1][keep ^ 1], vi_11_converted_ring);
+
+                v0_ring[i] = sign * (-v_alpha_ring - vi_01_converted_ring + vi_11_converted_ring);
+                if ((keep == 0) && greaterThan)
+                {
+                    v0_ring[i] += sign * payload_ring;
+                }
+                else if ((keep == 1) && !greaterThan)
+                {
+                    v0_ring[i] += sign * payload_ring;
+                }
+                v_alpha_ring = v_alpha_ring - vi_10_converted_ring + vi_00_converted_ring + sign * v0_ring[i];
+
+                std::array<block, 2> siXOR{si[0][0] ^ si[1][0], si[0][1] ^ si[1][1]};
+
+                std::array<block, 2> t{
+                    (OneBlock & siXOR[0]) ^ a ^ OneBlock,
+                    (OneBlock & siXOR[1]) ^ a};
+
+                auto scw = siXOR[keep ^ 1] & notThreeBlock;
+
+                k0[i + 1] = k1[i + 1] = scw ^ (t[0] << 1) ^ t[1];
+
+                auto si0Keep = si[0][keep];
+                auto si1Keep = si[1][keep];
+                auto TKeep = t[keep];
+
+                s[0] = si0Keep ^ (zeroAndAllOne[ti0] & (scw ^ TKeep));
+                s[1] = si1Keep ^ (zeroAndAllOne[ti1] & (scw ^ TKeep));
+            }
+
+            u64 s0_converted_ring;
+            u64 s1_converted_ring;
+            convert_sh(s[0] & notThreeBlock, s0_converted_ring);
+            convert_sh(s[1] & notThreeBlock, s1_converted_ring);
+
+            u64 g0_ring = s1_converted_ring - s0_converted_ring - v_alpha_ring;
+            if (lsb(s[1]) == 1)
+            {
+                g0_ring = -g0_ring;
+            }
+
+            return std::make_pair(
+                DCFRingKeySH(k0, v0_ring, g0_ring),
+                DCFRingKeySH(k1, v0_ring, g0_ring)
+            );
+        }
+
+        block traverseOneDCF_sh(const block &s, const block &cw, const u8 &keep,
+                        u64 &out_ring,
+                        u64 v_ring,
+                        bool geq, int party)
+        {
+            static const block blocks[4] = {ZeroBlock, TwoBlock, OneBlock, ThreeBlock};
+
+            block stcw;
+            block ct[2];
+            u8 t_previous = lsb(s);
+            const auto scw = (cw & notThreeBlock);
+            block ds[] = { ((cw >> 1) & OneBlock), (cw & OneBlock) };
+            const auto mask = zeroAndAllOne[t_previous];
+            auto ss = s & notThreeBlock;
+
+            if (keep == 0)
+            {
+                ct[0] = ak0.ecbEncBlock(ss) ^ ss;
+                ct[1] = ak2.ecbEncBlock(ss) ^ ss;
+            }
+            else
+            {
+                ct[0] = ak1.ecbEncBlock(ss) ^ ss;
+                ct[1] = ak3.ecbEncBlock(ss) ^ ss;
+            }
+
+            stcw = ((scw ^ ds[keep]) & mask) ^ ct[0];
+
+            u64 v_this_level_converted_ring;
+            convert_sh(ct[1], v_this_level_converted_ring);
+            u64 sign = 1;
+            if (party == 1) sign = -sign;
+            out_ring = out_ring + sign * (v_this_level_converted_ring + v_ring * t_previous);
+            return stcw;
+        }
+
+        std::tuple<block, u64> traversePathDCF_sh(int party, const DCFRingKeySH &key, u64 x, const bool geq)
+        {
+            int bin = key.k.size() - 1;
+            block s = _mm_loadu_si128(key.k.data());
+            u64 out_ring = 0;
+
+            for (int i = 0; i < bin; ++i)
+            {
+                const u8 keep = static_cast<uint8_t>(x >> (bin - 1 - i)) & 1;
+                s = traverseOneDCF_sh(s, _mm_loadu_si128(key.k.data() + (i + 1)),
+                        keep,
+                        out_ring,
+                        key.v_ring[i],
+                        geq, party);
+            }
+            return std::make_tuple(s, out_ring);
+        }
+
+        u64 dcfring_eval_sh(int party, const DCFRingKeySH &key, const u64 &x, const bool greaterThan)
+        {
+            auto [s, out_ring] = traversePathDCF_sh(party, key, x, greaterThan);
+            u8 t = lsb(s);
+
+            u64 s_converted_ring;
+            convert_sh(s & notThreeBlock, s_converted_ring);
+
+            if (t)
+            {
+                s_converted_ring = s_converted_ring + key.g_ring;
+            }
+
+            if (party == 1)
+            {
+                s_converted_ring = -s_converted_ring;
+            }
+
+            out_ring = out_ring + s_converted_ring;
+            return out_ring;
+        }
     }
 }

@@ -216,6 +216,12 @@ namespace shark
         template <typename T>
         shark::span<T> recv_array(u64 size)
         {
+            if (keyBuf->isMem())
+            {
+                shark::span<T> arr(size);
+                keyBuf->read((char *)arr.data(), size * sizeof(T));
+                return arr;
+            }
             T* buf = (T*) keyBuf->read(size * sizeof(T));
             shark::span<T> arr(buf, size);
             return arr;
@@ -321,6 +327,12 @@ namespace shark
         template <typename T>
         shark::span<T> recv_array(u64 size)
         {
+            if (keyBuf->isMem())
+            {
+                shark::span<T> arr(size);
+                keyBuf->read((char *)arr.data(), size * sizeof(T));
+                return arr;
+            }
             T* buf = (T*) keyBuf->read(size * sizeof(T));
             shark::span<T> arr(buf, size);
             return arr;
