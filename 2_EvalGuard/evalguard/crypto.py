@@ -24,13 +24,25 @@ def prf(key: bytes, input_data: bytes) -> bytes:
     return hmac.new(key, input_data, hashlib.sha256).digest()
 
 
-def keygen(security_param: int = 256) -> bytes:
+def keygen(security_param: int = 256, seed: int = None) -> bytes:
     """
-    Gen(1^λ) → K: generate a λ-bit secret key using a cryptographically
-    secure RNG (secrets.token_bytes, backed by os.urandom).
-    Definition 4.
+    Gen(1^λ) → K: generate a λ-bit secret key.
+
+    If seed is None, uses a cryptographically secure RNG
+    (secrets.token_bytes, backed by os.urandom). Definition 4.
+
+    If seed is provided, uses a deterministic PRNG for reproducibility
+    across experiment runs (same seed → same K → same watermark mapping).
     """
-    return secrets.token_bytes(security_param // 8)
+    if seed is None:
+        return secrets.token_bytes(security_param // 8)
+    # Deterministic: derive key from seed via HMAC so it is still
+    # uniformly distributed, just reproducible.
+    h = hmac.new(
+        struct.pack(">Q", seed), b"keygen:" + struct.pack(">I", security_param),
+        hashlib.sha256,
+    ).digest()
+    return h[: security_param // 8]
 
 
 def kdf(key: bytes, context: str) -> bytes:

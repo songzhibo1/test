@@ -464,7 +464,8 @@ def experiment_distillation(model, trainset, testloader, latent_layer, device,
                             eta, dist_epochs, dist_lr, dist_batch,
                             delta_logit=2.0, beta=0.4, delta_min=0.5,
                             verify_temperature=5.0,
-                            label_mode="soft", tag=""):
+                            label_mode="soft", tag="",
+                            seed=None):
     """
     Table VI: Distillation + Confidence Shift Verification.
 
@@ -524,7 +525,7 @@ def experiment_distillation(model, trainset, testloader, latent_layer, device,
             print("  Cached surrogate: acc={:.1f}%, {} triggers, K_w={}...".format(
                 acc_s*100, len(triggers), Kw.hex()[:12]))
         else:
-            Kw = kdf(keygen(256), "watermark")
+            Kw = kdf(keygen(256, seed=seed), "watermark")
             wm = WatermarkModule(
                 K_w=Kw, r_w=rw, delta_logit=delta_logit, beta=beta,
                 delta_min=delta_min,
@@ -620,7 +621,8 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
                             verify_temperature=5.0,
                             label_mode="soft", trigger_mode="rec_trigger",
                             own_trigger_size=0, rec_trigger_size=0,
-                            own_data_source="trainset", tag=""):
+                            own_data_source="trainset", tag="",
+                            seed=None):
     """
     Table VII: Surrogate Fine-Tuning Attack.
 
@@ -629,6 +631,7 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
         trigger_mode: "rec_trigger" = use original trigger set,
                       "own_trigger" = reconstruct from Owner's data,
                       "both" = run both for comparison.
+        seed: if set, K_w is generated deterministically for reproducibility.
         own_data_source: "trainset" (default — overlaps with D_eval) or
                          "testset" (true zero-leakage probe).
     """
@@ -670,7 +673,7 @@ def experiment_surrogate_ft(model, trainset, testset, testloader, latent_layer, 
 
             ql = DataLoader(Subset(trainset, list(range(min(n_queries, len(trainset))))),
                             batch_size=64, shuffle=True, num_workers=2)
-            Kw = kdf(keygen(256), "watermark")
+            Kw = kdf(keygen(256, seed=seed), "watermark")
             wm = WatermarkModule(
                 K_w=Kw, r_w=rw, delta_logit=delta_logit, beta=beta,
                 delta_min=delta_min,
@@ -996,6 +999,11 @@ def main():
 
     pa.add_argument("--epsilons", type=str, default="1,10,50,100,200")
 
+    pa.add_argument("--seed", type=int, default=None,
+                    help="Deterministic seed for K_w generation. Same seed → same "
+                         "watermark key → reproducible results across runs. "
+                         "If not set, K_w is generated from os.urandom (non-reproducible).")
+
     pa.add_argument("--tag", type=str, default="",
                     help="Free-form experiment tag appended to checkpoint and result "
                          "filenames. Use this to distinguish runs with different "
@@ -1021,6 +1029,7 @@ def main():
     print("  rw={}, delta_logit={}, beta={}, delta_min={}, verify_T={}".format(
         a.rw, a.delta_logit, a.beta, a.delta_min, a.verify_temperature))
     print("  tag={}".format(a.tag if a.tag else "(none)"))
+    print("  seed={}".format(a.seed if a.seed is not None else "(random)"))
     print("  dist: epochs={}, lr={}, batch={}".format(a.dist_epochs, a.dist_lr, a.dist_batch))
     print("  ft: epochs={}, lr={}, fractions={}".format(a.ft_epochs, a.ft_lr, ft_fractions))
     print("  temperatures={}".format(temperatures))
@@ -1057,7 +1066,8 @@ def main():
                                     delta_logit=a.delta_logit, beta=a.beta,
                                     delta_min=a.delta_min,
                                     verify_temperature=a.verify_temperature,
-                                    label_mode=lm, tag=a.tag)
+                                    label_mode=lm, tag=a.tag,
+                                    seed=a.seed)
 
     if a.experiment in ("surrogate_ft", "all"):
         for lm in label_modes:
@@ -1073,7 +1083,7 @@ def main():
                                     own_trigger_size=a.own_trigger_size,
                                     rec_trigger_size=a.rec_trigger_size,
                                     own_data_source=a.own_data_source,
-                                    tag=a.tag)
+                                    tag=a.tag, seed=a.seed)
 
     if a.experiment in ("overhead", "all"):
         experiment_overhead(model, testloader, a.device, a.epsilon, a.delta,
