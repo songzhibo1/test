@@ -40,6 +40,25 @@ if [[ "$PROTOCOL" == *-online ]]; then
     echo ">>> Online-only mode: will use fake preprocessing + -F flag"
 fi
 
+# ==================== Protocol -> Number of parties mapping ====================
+# Auto-detect required party count from protocol name (for Fake-Offline.x and data prep).
+PROTO_FOR_NPARTIES="${BASE_PROTOCOL:-$PROTOCOL}"
+case "$PROTO_FOR_NPARTIES" in
+    semi|mascot|semi2k|spdz2k|hemi|soho|temi|cowgear|lowgear|highgear|chaigear|mama|tiny|tinier|semi-bin|semi-bmr|yao|emulate|emu)
+        N_PARTIES=2
+        ;;
+    rep-field|replicated|mal-rep-field|malicious-replicated|shamir|mal-shamir|ps-rep-field|sy-rep-field|brain|mal-rep-ring|rep-ring|atlas|dealer-ring|ccd|mal-ccd|rep-bmr)
+        N_PARTIES=3
+        ;;
+    rep4-ring)
+        N_PARTIES=4
+        ;;
+    *)
+        N_PARTIES=2
+        ;;
+esac
+echo ">>> Protocol '$PROTO_FOR_NPARTIES' detected -> using $N_PARTIES parties"
+
 # Model configuration presets
 MODEL_PRESET="${2:-mnist_3layer_20}"
 
@@ -153,6 +172,7 @@ python3 Programs/Source/crown/crown_prepare_data.py \
     --eps "$EPS" \
     --true-label "$TRUE_LABEL" \
     --target-label "$TARGET_LABEL" \
+    --num-parties "$N_PARTIES" \
     --output-dir Player-Data
 
 echo "Data preparation complete."
@@ -251,7 +271,7 @@ if [ "$ONLINE_ONLY" = true ]; then
         # --program reads compiled bytecode to auto-detect edaBit lengths and all
         # other preprocessing requirements (triples, bits, inputs, etc.)
         # --default N sets the count for types not specified by --program
-        ./Fake-Offline.x 2 --default "$FAKE_PREP_SIZE" --program "$PROGRAM_NAME" 2>&1 | tail -10
+        ./Fake-Offline.x "$N_PARTIES" --default "$FAKE_PREP_SIZE" --program "$PROGRAM_NAME" 2>&1 | tail -10
         echo "  Fake preprocessing generated (with correct edaBit lengths)."
     else
         echo "WARNING: Fake-Offline.x not found. Attempting to run without it..."

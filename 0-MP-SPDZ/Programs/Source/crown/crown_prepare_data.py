@@ -53,6 +53,10 @@ def main():
     parser.add_argument('--true-label', type=int, default=7)
     parser.add_argument('--target-label', type=int, default=6)
     parser.add_argument('--output-dir', type=str, default='Player-Data')
+    parser.add_argument('--num-parties', type=int, default=2,
+                        help='Total number of MPC parties (default: 2 for 2PC). '
+                             'For 3PC (rep-field/mal-rep-field) use 3. '
+                             'P0=SERVER, P1=CLIENT, P2+=assistant (no input).')
     args = parser.parse_args()
 
     num_layers = len(args.layer_dims) - 1
@@ -86,6 +90,18 @@ def main():
 
     print(f"\nTotal values: P0={len(p0)}, P1={len(p1)}")
     print(f"  P1 breakdown: x0={len(x0)}, eps=1, diff_vec={output_dim}")
+
+    # Extra parties (P2, P3, ...) for 3PC+ protocols: no private input needed,
+    # but MP-SPDZ requires each party's input file to exist.
+    if args.num_parties > 2:
+        print(f"\nPreparing assistant parties (P2..P{args.num_parties-1}) with empty input...")
+        for i in range(2, args.num_parties):
+            filepath = os.path.join(args.output_dir, f'Input-P{i}-0')
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            # Create empty file (no input values for assistant parties)
+            open(filepath, 'w').close()
+            print(f"  Written empty input file for P{i}: {filepath}")
+
     print("Data preparation complete!")
 
 
