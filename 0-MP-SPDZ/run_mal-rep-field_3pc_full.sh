@@ -1,25 +1,31 @@
 #!/bin/bash
 
 # ==============================================================================
-# 批量执行脚本: 全 MNIST 模型 semi2k 协议实证测试
+# 批量执行脚本: 全 MNIST 模型 mal-rep-field 协议实证测试
 #
-# semi2k = 2PC dishonest-majority, SEMI-HONEST security
-# 域:     环 Z_{2^k} (ring, 典型 k=64 或 128)
-# 预处理: OT extension (在环上)
-# 在线:   Beaver triples
-# 关键对比: 与 semi 相同的安全模型, 唯一差别是算术域 (素域 -> 环)
-#          用于评估 "环上 fixed-point CROWN 是否更高效" (截断 = 原生位移)
+# mal-rep-field = 3PC honest-majority, MALICIOUS security
+# 域:             素域 (prime field)
+# 预处理:         少量 sacrifice 比特, 但远比 2PC 恶意协议 (mascot) 便宜
+# 在线:           3PC 复制分享乘法 + post-sacrifice 或 hash-based 验证
+# 关键对比:       与 rep-field 相同方数/域, 差别是安全模型 (半诚实 -> 恶意)
+#                与 mascot 相同安全模型, 差别是方数 (2 -> 3)
+#                展示 "3PC honest-majority + malicious" 组合的性价比
 #
-# 结果保存在: crown-results/semi2k/<variant>/<model>/eps_<eps>/
+# 注意:
+#   - 需要 3 方运行 (自动在 localhost 启动 3 个 player 进程)
+#   - 需要已编译 malicious-rep-field-party.x  (make -j4 malicious-rep-field-party.x)
+#   - mnist_7layer_256 可能较慢, 建议最后跑
+#
+# 结果保存在: crown-results/mal-rep-field_3pc/<variant>/<model>/eps_<eps>/
 # ==============================================================================
 
-PROTOCOL="semi2k"
+PROTOCOL="mal-rep-field"
 
 SCRIPTS=(
     "./run_crown_elemwise.sh"
     "./run_crown_batchrelu.sh"
     "./run_crown_batchsplit.sh"
-    "./run_crown_naiveopt.sh"
+    "./run_crown_navieopt.sh"
     "./run_crown_naive.sh"
 )
 
@@ -32,9 +38,16 @@ TEST_CASES=(
 )
 
 echo "=============================================================================="
-echo "开始 semi2k 协议 (2PC semi-honest, ring) 全 MNIST 实证测试..."
+echo "开始 mal-rep-field 协议 (3PC malicious, replicated) 全 MNIST 实证测试..."
 echo "策略: 从小到大运行, 自动清理 Player-Data/*.sch 以节省磁盘."
 echo "=============================================================================="
+
+# Sanity check
+if [ ! -f "./malicious-rep-field-party.x" ]; then
+    echo "!! 警告: malicious-rep-field-party.x 未编译."
+    echo "   请先执行: make -j4 malicious-rep-field-party.x"
+    echo "   继续尝试运行 (可能失败)..."
+fi
 
 for case in "${TEST_CASES[@]}"; do
     read -r MODEL EPS ID TRUE TARGET <<< "$case"
@@ -72,6 +85,6 @@ done
 
 echo ""
 echo "=============================================================================="
-echo "semi2k 协议全部 MNIST 测试完成!"
-echo "结果目录: crown-results/semi2k/"
+echo "mal-rep-field 协议全部 MNIST 测试完成!"
+echo "结果目录: crown-results/mal-rep-field_3pc/"
 echo "=============================================================================="

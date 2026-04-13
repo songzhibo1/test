@@ -1,32 +1,30 @@
 #!/bin/bash
 
 # ==============================================================================
-# 批量执行脚本: 全 MNIST 模型 mascot 协议实证测试
+# 批量执行脚本: 全 MNIST 模型 spdz2k 协议实证测试
 #
-# mascot = 2PC dishonest-majority, MALICIOUS security (SPDZ-style OT+MAC)
-# 域:     素域 (prime field)
-# 预处理: OT extension + sacrifice + MAC
+# spdz2k = 2PC dishonest-majority, MALICIOUS security
+# 域:     环 Z_{2^k} (ring)
+# 预处理: OT extension + sacrifice + MAC (在环上)
 # 在线:   Beaver triples + MAC verification
+# 关键对比: 与 mascot 相同的安全模型, 唯一差别是算术域 (素域 -> 环)
+#          与 semi2k 相同的域, 差别是安全模型 (半诚实 -> 恶意)
+#          完整 2x2 对比: semi/mascot/semi2k/spdz2k
 #
-# 结果保存在: crown-results/mascot/<variant>/<model>/eps_<eps>/
-#
-# 注意:
-#   - mascot 的 mnist_7layer_256 可能较慢 (恶意安全 offline 比 semi 贵 2-3x)
-#   - 若磁盘紧张,建议先跑 2-5 层模型
+# 注意: spdz2k 的 mnist_7layer_256 可能非常慢 (恶意+环, offline 最重)
+# 结果保存在: crown-results/spdz2k_2pc/<variant>/<model>/eps_<eps>/
 # ==============================================================================
 
-PROTOCOL="mascot"
+PROTOCOL="spdz2k"
 
-# 5 种 MPC 变体
 SCRIPTS=(
     "./run_crown_elemwise.sh"
     "./run_crown_batchrelu.sh"
     "./run_crown_batchsplit.sh"
-    "./run_crown_naiveopt.sh"
+    "./run_crown_navieopt.sh"
     "./run_crown_naive.sh"
 )
 
-# MNIST 测试用例 (从小到大)
 TEST_CASES=(
     "mnist_2layer_20 0.04500 0 7 4"
     "mnist_3layer_20 0.03000 0 7 6"
@@ -36,7 +34,7 @@ TEST_CASES=(
 )
 
 echo "=============================================================================="
-echo "开始 mascot 协议 (2PC malicious, field) 全 MNIST 实证测试..."
+echo "开始 spdz2k 协议 (2PC malicious, ring) 全 MNIST 实证测试..."
 echo "策略: 从小到大运行, 自动清理 Player-Data/*.sch 以节省磁盘."
 echo "=============================================================================="
 
@@ -66,7 +64,6 @@ for case in "${TEST_CASES[@]}"; do
         CROWN_TARGET_LABEL=$TARGET \
         $SCRIPT $PROTOCOL "$MODEL"
 
-        # 清理预处理缓存
         echo "清理 Player-Data/*.sch ..."
         rm -rf Player-Data/*.sch
 
@@ -77,6 +74,6 @@ done
 
 echo ""
 echo "=============================================================================="
-echo "mascot 协议全部 MNIST 测试完成!"
-echo "结果目录: crown-results/mascot/"
+echo "spdz2k 协议全部 MNIST 测试完成!"
+echo "结果目录: crown-results/spdz2k_2pc/"
 echo "=============================================================================="

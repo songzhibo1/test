@@ -1,34 +1,32 @@
 #!/bin/bash
 
 # ==============================================================================
-# 批量执行脚本: 全 MNIST 模型 mal-rep-field 协议实证测试
+# 批量执行脚本: 全 MNIST 模型 mascot 协议实证测试
 #
-# mal-rep-field = 3PC honest-majority, MALICIOUS security
-# 域:             素域 (prime field)
-# 预处理:         少量 sacrifice 比特, 但远比 2PC 恶意协议 (mascot) 便宜
-# 在线:           3PC 复制分享乘法 + post-sacrifice 或 hash-based 验证
-# 关键对比:       与 rep-field 相同方数/域, 差别是安全模型 (半诚实 -> 恶意)
-#                与 mascot 相同安全模型, 差别是方数 (2 -> 3)
-#                展示 "3PC honest-majority + malicious" 组合的性价比
+# mascot = 2PC dishonest-majority, MALICIOUS security (SPDZ-style OT+MAC)
+# 域:     素域 (prime field)
+# 预处理: OT extension + sacrifice + MAC
+# 在线:   Beaver triples + MAC verification
+#
+# 结果保存在: crown-results/mascot_2pc/<variant>/<model>/eps_<eps>/
 #
 # 注意:
-#   - 需要 3 方运行 (自动在 localhost 启动 3 个 player 进程)
-#   - 需要已编译 malicious-rep-field-party.x  (make -j4 malicious-rep-field-party.x)
-#   - mnist_7layer_256 可能较慢, 建议最后跑
-#
-# 结果保存在: crown-results/mal-rep-field/<variant>/<model>/eps_<eps>/
+#   - mascot 的 mnist_7layer_256 可能较慢 (恶意安全 offline 比 semi 贵 2-3x)
+#   - 若磁盘紧张,建议先跑 2-5 层模型
 # ==============================================================================
 
-PROTOCOL="mal-rep-field"
+PROTOCOL="mascot"
 
+# 5 种 MPC 变体
 SCRIPTS=(
     "./run_crown_elemwise.sh"
     "./run_crown_batchrelu.sh"
     "./run_crown_batchsplit.sh"
-    "./run_crown_naiveopt.sh"
+    "./run_crown_navieopt.sh"
     "./run_crown_naive.sh"
 )
 
+# MNIST 测试用例 (从小到大)
 TEST_CASES=(
     "mnist_2layer_20 0.04500 0 7 4"
     "mnist_3layer_20 0.03000 0 7 6"
@@ -38,16 +36,9 @@ TEST_CASES=(
 )
 
 echo "=============================================================================="
-echo "开始 mal-rep-field 协议 (3PC malicious, replicated) 全 MNIST 实证测试..."
+echo "开始 mascot 协议 (2PC malicious, field) 全 MNIST 实证测试..."
 echo "策略: 从小到大运行, 自动清理 Player-Data/*.sch 以节省磁盘."
 echo "=============================================================================="
-
-# Sanity check
-if [ ! -f "./malicious-rep-field-party.x" ]; then
-    echo "!! 警告: malicious-rep-field-party.x 未编译."
-    echo "   请先执行: make -j4 malicious-rep-field-party.x"
-    echo "   继续尝试运行 (可能失败)..."
-fi
 
 for case in "${TEST_CASES[@]}"; do
     read -r MODEL EPS ID TRUE TARGET <<< "$case"
@@ -75,6 +66,7 @@ for case in "${TEST_CASES[@]}"; do
         CROWN_TARGET_LABEL=$TARGET \
         $SCRIPT $PROTOCOL "$MODEL"
 
+        # 清理预处理缓存
         echo "清理 Player-Data/*.sch ..."
         rm -rf Player-Data/*.sch
 
@@ -85,6 +77,6 @@ done
 
 echo ""
 echo "=============================================================================="
-echo "mal-rep-field 协议全部 MNIST 测试完成!"
-echo "结果目录: crown-results/mal-rep-field/"
+echo "mascot 协议全部 MNIST 测试完成!"
+echo "结果目录: crown-results/mascot_2pc/"
 echo "=============================================================================="

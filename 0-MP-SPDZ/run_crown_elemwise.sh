@@ -59,6 +59,11 @@ case "$PROTO_FOR_NPARTIES" in
 esac
 echo ">>> Protocol '$PROTO_FOR_NPARTIES' detected -> using $N_PARTIES parties"
 
+# Append party-count suffix to PROTOCOL_DIR (results directory) for disambiguation.
+# e.g. "semi" -> "semi_2pc", "rep-field" -> "rep-field_3pc", "semi-online" -> "semi-online_2pc"
+PROTOCOL_DIR="${PROTOCOL_DIR}_${N_PARTIES}pc"
+echo ">>> Results directory suffix: ${PROTOCOL_DIR}"
+
 # Model configuration presets
 MODEL_PRESET="${2:-mnist_3layer_20}"
 
