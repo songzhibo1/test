@@ -45,6 +45,8 @@ add_library(${PROJECT_NAME}
     src/protocols/mul.cpp
     src/protocols/lut.cpp
     src/protocols/reciprocal.cpp
+    src/protocols/matmul_ars.cpp
+    src/protocols/mul_ars.cpp
     src/crypto/dcfbit.cpp
     src/crypto/dcfring.cpp
     src/crypto/dpfring.cpp
@@ -108,13 +110,43 @@ set (BENCHMARKS
     mnist-A
     hinet
     vgg16
-    simple_demo
 )
 
 foreach (benchmark IN LISTS BENCHMARKS)
     add_executable(benchmark-${benchmark} benchmarks/${benchmark}.cpp)
     target_link_libraries(benchmark-${benchmark} ${PROJECT_NAME})
 endforeach()
+
+# CROWN benchmarks (in subdirectory)
+add_executable(crowntest benchmarks/crown/crowntest.cpp)
+target_link_libraries(crowntest ${PROJECT_NAME})
+
+add_executable(crowntest_optimized benchmarks/crown/crowntest_optimized.cpp)
+target_link_libraries(crowntest_optimized ${PROJECT_NAME})
+
+add_executable(crowntest_batch benchmarks/crown/crowntest_batch.cpp)
+target_link_libraries(crowntest_batch ${PROJECT_NAME})
+
+add_executable(crowntest_batch_vec benchmarks/crown/crowntest_batch_vec.cpp)
+target_link_libraries(crowntest_batch_vec ${PROJECT_NAME})
+
+add_executable(crowntest_batch_true benchmarks/crown/crowntest_batch_true.cpp)
+target_link_libraries(crowntest_batch_true ${PROJECT_NAME})
+
+add_executable(crowntest_v2 benchmarks/crown/crowntest_v2.cpp)
+target_link_libraries(crowntest_v2 ${PROJECT_NAME})
+
+add_executable(crowntest_v3 benchmarks/crown/crowntest_v3.cpp)
+target_link_libraries(crowntest_v3 ${PROJECT_NAME})
+
+add_executable(crowntest_v4 benchmarks/crown/crowntest_v4.cpp)
+target_link_libraries(crowntest_v4 ${PROJECT_NAME})
+
+add_executable(crowntest_v5 benchmarks/crown/crowntest_v5.cpp)
+target_link_libraries(crowntest_v5 ${PROJECT_NAME})
+
+add_executable(crowntest_v6 benchmarks/crown/crowntest_v6.cpp)
+target_link_libraries(crowntest_v6 ${PROJECT_NAME})
 
 set (MICROBENCHMARKS
     relu

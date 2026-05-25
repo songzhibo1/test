@@ -53,15 +53,70 @@ namespace shark
 
             }
 
+            // ============================================================
+            // Semi-honest version (no MAC verification)
+            // ============================================================
+
+            void gen_sh(const shark::span<u64> &X, shark::span<u64> &Y, const std::vector<u64> &lut, int bin)
+            {
+                always_assert(X.size() == Y.size());
+                always_assert(lut.size() == (1ull << bin));
+                randomize(Y);
+
+                shark::span<u64> Xneg(X.size());
+                for (u64 i = 0; i < X.size(); i++)
+                {
+                    Xneg[i] = -X[i];
+                }
+
+                send_sh_dpfring(Xneg, bin);
+                send_sh_ashare(Y);
+            }
+
+            void eval_sh(const shark::span<u64> &X, shark::span<u64> &Y, const std::vector<u64> &lut, int bin)
+            {
+                always_assert(X.size() == Y.size());
+                always_assert(lut.size() == (1ull << bin));
+
+                shark::utils::start_timer("key_read");
+                auto dpfKeys = recv_sh_dpfring(X.size(), bin);
+                auto R_share = recv_sh_ashare(X.size());
+                shark::utils::stop_timer("key_read");
+
+                shark::span<u64> Y_share(X.size());
+
+                #pragma omp parallel for
+                for (u64 i = 0; i < X.size(); i++)
+                {
+                    auto x = X[i];
+
+                    auto res_share = crypto::dpfring_evalall_reduce_sh(party, dpfKeys[i], lut, x);
+
+                    Y_share[i] = res_share + R_share[i];
+                }
+
+                Y = sh_reconstruct(Y_share);
+            }
+
+            // ============================================================
+            // Unified interface (selects based on semi_honest_mode)
+            // ============================================================
+
             void call(const shark::span<u64> &X, shark::span<u64> &Y, const std::vector<u64> &lut, int bin)
             {
                 if (party == DEALER)
                 {
-                    gen(X, Y, lut, bin);
+                    if (semi_honest_mode)
+                        gen_sh(X, Y, lut, bin);
+                    else
+                        gen(X, Y, lut, bin);
                 }
                 else
                 {
-                    eval(X, Y, lut, bin);
+                    if (semi_honest_mode)
+                        eval_sh(X, Y, lut, bin);
+                    else
+                        eval(X, Y, lut, bin);
                 }
             }
 

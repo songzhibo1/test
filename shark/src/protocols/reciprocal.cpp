@@ -13,6 +13,9 @@ namespace shark
     {
         namespace reciprocal
         {
+            // ============================================================
+            // Malicious security version (with MAC verification)
+            // ============================================================
 
             u64 n_m = 7;
             u64 n_e = 4;
@@ -149,15 +152,149 @@ namespace shark
 
             }
 
+            // ============================================================
+            // Semi-honest version (no MAC verification)
+            // ============================================================
+
+            void gen_sh(const shark::span<u64> &X, shark::span<u64> &Y, int f)
+            {
+                always_assert(X.size() == Y.size());
+
+                // drelu::call() already supports semi-honest mode
+                auto d = drelu::call(X);
+
+                shark::span<u64> Xneg(X.size());
+                for (u64 i = 0; i < X.size(); i++)
+                {
+                    Xneg[i] = -X[i];
+                }
+
+                // Use semi-honest DCF ring keys (no MAC tags)
+                send_sh_dcfring(Xneg, 2*f+1);
+
+                shark::span<u64> r_m_scale(X.size());
+                shark::span<u64> r_e_scale(X.size());
+
+                randomize(r_m_scale);
+                randomize(r_e_scale);
+
+                // Use semi-honest shares (no MAC tags)
+                send_sh_ashare(r_m_scale);
+                send_sh_ashare(r_e_scale);
+
+                // These calls already support semi-honest mode via their call() interface
+                auto m_untruncated = mul::call(X, r_m_scale);
+                auto mantissa = lrs::call(m_untruncated, 64 - n_m - 1);
+
+                auto mantissa_inverse = lut::call(mantissa, make_lut(), n_m);
+                auto inv_untrucated = mul::call(mantissa_inverse, r_e_scale);
+                auto inv = lrs::call(inv_untrucated, f_p);
+                select::call(d, inv, Y);
+            }
+
+            void eval_sh(const shark::span<u64> &X, shark::span<u64> &Y, int f)
+            {
+                always_assert(X.size() == Y.size());
+
+                shark::span<u64> Xp(X.size());
+
+                #pragma omp parallel for
+                for (u64 i = 0; i < X.size(); i++)
+                {
+                    Xp[i] = X[i] - (1ull << (2*f)) - 1;
+                }
+
+                // drelu::call() already supports semi-honest mode
+                auto d = drelu::call(Xp);
+
+                #pragma omp parallel for
+                for (u64 i = 0; i < X.size(); i++)
+                {
+                    d[i] = d[i] ^ 1;
+                }
+
+                shark::utils::start_timer("key_read");
+                // Use semi-honest DCF ring keys (no MAC tags)
+                auto dcfkeys = recv_sh_dcfring(X.size(), 2*f+1);
+                // Use semi-honest shares (no MAC tags)
+                auto r_m_scale = recv_sh_ashare(X.size());
+                auto r_e_scale = recv_sh_ashare(X.size());
+                shark::utils::stop_timer("key_read");
+
+                std::vector<u64> knots;
+                for (u64 i = 1; i <= (2*f); i++)
+                {
+                    knots.push_back(1ull << i);
+                }
+                knots.push_back((1ull << 2*f) + 1);
+                u64 m = knots.size();
+
+                // Use u64 instead of u128 for semi-honest (no MAC tags)
+                shark::span<u64> m_scale_share(X.size());
+                shark::span<u64> e_scale_share(X.size());
+
+                #pragma omp parallel for
+                for (u64 i = 0; i < X.size(); i++)
+                {
+                    m_scale_share[i] = r_m_scale[i];
+                    e_scale_share[i] = r_e_scale[i];
+
+                    auto idx_prev = (-X[i] - 1) % (1ull << (2*f+1));
+                    // Use semi-honest DCF evaluation (returns only value, no MAC tag)
+                    auto t_prev = crypto::dcfring_eval_sh(party, dcfkeys[i], idx_prev);
+
+                    for (u64 j = 0; j < m; j++)
+                    {
+                        auto idx = (knots[j] - X[i] - 1) % (1ull << (2*f+1));
+                        auto t = crypto::dcfring_eval_sh(party, dcfkeys[i], idx);
+                        auto s = t_prev - t;
+
+                        if (idx < idx_prev)
+                        {
+                            s += 1 * party;
+                        }
+
+                        m_scale_share[i] += s * (1ull << (63 - j));
+                        e_scale_share[i] += s * (1ull << (2*f - j + n_m));
+
+                        t_prev = t;
+                        idx_prev = idx;
+                    }
+                }
+
+                // Use semi-honest reconstruct (no MAC verification)
+                auto m_scale = sh_reconstruct(m_scale_share);
+                auto e_scale = sh_reconstruct(e_scale_share);
+
+                // These calls already support semi-honest mode via their call() interface
+                auto m_untruncated = mul::call(X, m_scale);
+                auto mantissa = lrs::call(m_untruncated, 64 - n_m - 1);
+
+                auto mantissa_inverse = lut::call(mantissa, make_lut(), n_m);
+                auto inv_untrucated = mul::call(mantissa_inverse, e_scale);
+                auto inv = lrs::call(inv_untrucated, f_p);
+                select::call(d, inv, Y);
+            }
+
+            // ============================================================
+            // Unified interface (selects based on semi_honest_mode)
+            // ============================================================
+
             void call(const shark::span<u64> &X, shark::span<u64> &Y, int f)
             {
                 if (party == DEALER)
                 {
-                    gen(X, Y, f);
+                    if (semi_honest_mode)
+                        gen_sh(X, Y, f);
+                    else
+                        gen(X, Y, f);
                 }
                 else
                 {
-                    eval(X, Y, f);
+                    if (semi_honest_mode)
+                        eval_sh(X, Y, f);
+                    else
+                        eval(X, Y, f);
                 }
             }
 

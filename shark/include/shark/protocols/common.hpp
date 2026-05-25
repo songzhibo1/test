@@ -40,7 +40,19 @@ namespace shark {
         /// MP-SPDZ does all comparisons, like in ReLU and MaxPool, in bitlength of 32. Setting this to true will make the protocols do the same.
         extern bool mpspdz_32bit_compaison;
 
+        /// Security mode: false = malicious (default), true = semi-honest
+        /// When semi_honest_mode is true:
+        /// - MAC tags are not computed or verified
+        /// - batch_check() becomes a no-op
+        /// - Communication overhead is reduced by ~50%
+        extern bool semi_honest_mode;
+
+        /// Enable semi-honest mode (disables MAC verification)
+        void set_semi_honest_mode(bool enabled);
+
         using FKOS = std::tuple<u8, u64>;
+        /// Semi-honest version: just the bit, no MAC tag
+        using FKOS_SH = u8;
         
         /// methods used by the dealer
         template <typename T>
@@ -69,5 +81,33 @@ namespace shark {
 
         FKOS xor_fkos(FKOS x, FKOS y);
         FKOS not_fkos(FKOS x);
+
+        // ============================================================
+        // Semi-honest mode functions (no MAC verification)
+        // ============================================================
+
+        /// Semi-honest: send share without MAC tags (dealer side)
+        void send_sh_ashare(const shark::span<u64> &share);
+        void send_sh_ashare_u128(const shark::span<u128> &share);  // For ARS protocols with u128 intermediates
+        void send_sh_bshare(const shark::span<u8> &share);
+        void send_sh_dcfbit(const shark::span<u64> &share, int bin);
+        void send_sh_dcfring(const shark::span<u64> &share, int bin);
+        void send_sh_dpfring(const shark::span<u64> &share, int bin);
+
+        /// Semi-honest: receive share without MAC tags (evaluator side)
+        shark::span<u64> recv_sh_ashare(u64 size);
+        shark::span<u128> recv_sh_ashare_u128(u64 size);  // For ARS protocols with u128 intermediates
+        shark::span<u8> recv_sh_bshare(u64 size);
+        shark::span<crypto::DCFBitKeySH> recv_sh_dcfbit(u64 size, int bin);
+        shark::span<crypto::DCFRingKeySH> recv_sh_dcfring(u64 size, int bin);
+        shark::span<crypto::DPFRingKeySH> recv_sh_dpfring(u64 size, int bin);
+
+        /// Semi-honest: simple reconstruct without MAC verification
+        shark::span<u64> sh_reconstruct(shark::span<u64> &share);
+        shark::span<u8> sh_reconstruct(shark::span<u8> &share);
+
+        /// Semi-honest XOR for boolean shares
+        u8 xor_sh(u8 x, u8 y);
+        u8 not_sh(u8 x);
     }
 }

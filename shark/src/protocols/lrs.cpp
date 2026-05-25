@@ -86,15 +86,101 @@ namespace shark
 
             }
 
+            // ============================================================
+            // Semi-honest version (no MAC verification)
+            // ============================================================
+
+            void gen_sh(const shark::span<u64> &X, shark::span<u64> &Y, int f)
+            {
+                always_assert(X.size() == Y.size());
+                randomize(Y);
+
+                send_sh_dcfbit(X, 64);
+                send_sh_dcfbit(X, f);
+
+                shark::span<u8> r_w(X.size());
+                shark::span<u8> r_t(X.size());
+
+                randomize(r_w);
+                randomize(r_t);
+
+                send_sh_bshare(r_w);
+                send_sh_bshare(r_t);
+
+                shark::span<u64> T(X.size() * 4);
+                for (u64 i = 0; i < X.size(); ++i)
+                {
+                    for (u64 j = 0; j < 4; ++j)
+                    {
+                        u8 w = (j / 1) % 2;
+                        u8 t = (j / 2) % 2;
+
+                        T[i * 4 + j] = ((1ull << (64 - f)) * (w ^ r_w[i])) - (t ^ r_t[i]) - (X[i] >> f) + Y[i];
+                    }
+                }
+                send_sh_ashare(T);
+            }
+
+            void eval_sh(const shark::span<u64> &X, shark::span<u64> &Y, int f)
+            {
+                always_assert(X.size() == Y.size());
+
+                shark::utils::start_timer("key_read");
+                auto dcfkeysN = recv_sh_dcfbit(X.size(), 64);
+                auto dcfkeysF = recv_sh_dcfbit(X.size(), f);
+                auto r_w = recv_sh_bshare(X.size());
+                auto r_t = recv_sh_bshare(X.size());
+                auto T = recv_sh_ashare(X.size() * 4);
+                shark::utils::stop_timer("key_read");
+
+                shark::span<u8> w(X.size());
+                shark::span<u8> t(X.size());
+                shark::span<u64> Y_share(X.size());
+
+                #pragma omp parallel for
+                for (u64 i = 0; i < X.size(); i++)
+                {
+                    auto x = X[i];
+
+                    w[i] = crypto::dcfbit_eval_sh(dcfkeysN[i], x);
+                    t[i] = crypto::dcfbit_eval_sh(dcfkeysF[i], x);
+
+                    w[i] = xor_sh(w[i], r_w[i]);
+                    t[i] = xor_sh(t[i], r_t[i]);
+                }
+
+                auto w_cap = sh_reconstruct(w);
+                auto t_cap = sh_reconstruct(t);
+
+                #pragma omp parallel for
+                for (u64 i = 0; i < X.size(); ++i)
+                {
+                    u64 idx = 2 * t_cap[i] + w_cap[i];
+                    Y_share[i] = u64(party) * (X[i] >> f) + T[i * 4 + idx];
+                }
+
+                Y = sh_reconstruct(Y_share);
+            }
+
+            // ============================================================
+            // Unified interface (selects based on semi_honest_mode)
+            // ============================================================
+
             void call(const shark::span<u64> &X, shark::span<u64> &Y, int f)
             {
                 if (party == DEALER)
                 {
-                    gen(X, Y, f);
+                    if (semi_honest_mode)
+                        gen_sh(X, Y, f);
+                    else
+                        gen(X, Y, f);
                 }
                 else
                 {
-                    eval(X, Y, f);
+                    if (semi_honest_mode)
+                        eval_sh(X, Y, f);
+                    else
+                        eval(X, Y, f);
                 }
             }
 

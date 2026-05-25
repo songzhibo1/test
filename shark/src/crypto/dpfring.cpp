@@ -195,8 +195,150 @@ namespace shark
         {
             int bin = key.k.size() - 1;
             always_assert(lut.size() == (1ull<<bin));
-        
+
             return do_subtree(party, key, lut, 0, bin, 0, _mm_loadu_si128(key.k.data()), lut_offset);
+        }
+
+        // ============================================================
+        // Semi-honest version (no MAC tags)
+        // ============================================================
+
+        void convert_dpf_sh(const block &in, u64 &out_ring)
+        {
+            block ct;
+            ct = ak4.ecbEncBlock(in) ^ in;
+            out_ring = *(u64 *)&ct;
+        }
+
+        std::pair<DPFRingKeySH, DPFRingKeySH> dpfring_gen_sh(int bin, const u64 alpha)
+        {
+            u64 payload_ring = 1;
+
+            auto s = protocols::rand<std::array<block, 2>>();
+            block si[2][2];
+
+            shark::span<block> k0(bin + 1);
+            shark::span<block> k1(bin + 1);
+
+            s[0] = (s[0] & notOneBlock) ^ ((s[1] & OneBlock) ^ OneBlock);
+            k0[0] = s[0];
+            k1[0] = s[1];
+
+            for (int i = 0; i < bin; ++i)
+            {
+                const u8 keep = static_cast<uint8_t>(alpha >> (bin - 1 - i)) & 1;
+                auto a = toBlock(keep);
+
+                auto ss0 = s[0] & notThreeBlock;
+                auto ss1 = s[1] & notThreeBlock;
+
+                si[0][0] = ak0.ecbEncBlock(ss0) ^ ss0;
+                si[0][1] = ak1.ecbEncBlock(ss0) ^ ss0;
+
+                si[1][0] = ak0.ecbEncBlock(ss1) ^ ss1;
+                si[1][1] = ak1.ecbEncBlock(ss1) ^ ss1;
+
+                auto ti0 = lsb(s[0]);
+                auto ti1 = lsb(s[1]);
+
+                std::array<block, 2> siXOR{si[0][0] ^ si[1][0], si[0][1] ^ si[1][1]};
+
+                std::array<block, 2> t{
+                    (OneBlock & siXOR[0]) ^ a ^ OneBlock,
+                    (OneBlock & siXOR[1]) ^ a};
+
+                auto scw = siXOR[keep ^ 1] & notThreeBlock;
+
+                k0[i + 1] = k1[i + 1] = scw ^ (t[0] << 1) ^ t[1];
+
+                auto si0Keep = si[0][keep];
+                auto si1Keep = si[1][keep];
+                auto TKeep = t[keep];
+
+                s[0] = si0Keep ^ (zeroAndAllOne[ti0] & (scw ^ TKeep));
+                s[1] = si1Keep ^ (zeroAndAllOne[ti1] & (scw ^ TKeep));
+            }
+
+            u64 s0_converted_ring;
+            u64 s1_converted_ring;
+            convert_dpf_sh(s[0] & notThreeBlock, s0_converted_ring);
+            convert_dpf_sh(s[1] & notThreeBlock, s1_converted_ring);
+
+            u64 g0_ring = s1_converted_ring - s0_converted_ring + payload_ring;
+            if (lsb(s[1]) == 1)
+            {
+                g0_ring = -g0_ring;
+            }
+
+            return std::make_pair(
+                DPFRingKeySH(k0, g0_ring),
+                DPFRingKeySH(k1, g0_ring)
+            );
+        }
+
+        u64 do_leaf_sh(int party, const DPFRingKeySH &key, block s, const std::vector<u64> &lut, u64 x, u64 lut_offset, int bin)
+        {
+            u8 t = lsb(s);
+            u64 s_converted_ring;
+
+            convert_dpf_sh(s & notThreeBlock, s_converted_ring);
+
+            if (t)
+            {
+                s_converted_ring += key.g_ring;
+            }
+
+            if (party == 1)
+            {
+                s_converted_ring = -s_converted_ring;
+            }
+
+            u64 idx = (x + lut_offset) % (1ull << bin);
+            return s_converted_ring * lut[idx];
+        }
+
+        u64 do_subtree_sh(int party, const DPFRingKeySH &key, const std::vector<u64> &lut, int i, int bin, u64 curr_x, block s, u64 lut_offset)
+        {
+            if (i == bin)
+            {
+                return do_leaf_sh(party, key, s, lut, curr_x, lut_offset, bin);
+            }
+
+            u8 t_previous = lsb(s);
+            block cw = _mm_loadu_si128(key.k.data() + i + 1);
+
+            const auto scw = (cw & notThreeBlock);
+            block ds[] = { ((cw >> 1) & OneBlock), (cw & OneBlock) };
+            const auto mask = zeroAndAllOne[t_previous];
+            auto ss = s & notThreeBlock;
+
+            u64 out_ring = 0;
+
+            for (int keep = 0; keep < 2; ++keep)
+            {
+                block ct;
+                if (keep == 0)
+                {
+                    ct = ak0.ecbEncBlock(ss) ^ ss;
+                }
+                else
+                {
+                    ct = ak1.ecbEncBlock(ss) ^ ss;
+                }
+
+                block stcw = ((scw ^ ds[keep]) & mask) ^ ct;
+                out_ring += do_subtree_sh(party, key, lut, i + 1, bin, (curr_x << 1) + keep, stcw, lut_offset);
+            }
+
+            return out_ring;
+        }
+
+        u64 dpfring_evalall_reduce_sh(int party, const DPFRingKeySH &key, const std::vector<u64> &lut, u64 lut_offset)
+        {
+            int bin = key.k.size() - 1;
+            always_assert(lut.size() == (1ull<<bin));
+
+            return do_subtree_sh(party, key, lut, 0, bin, 0, _mm_loadu_si128(key.k.data()), lut_offset);
         }
     }
 }

@@ -9,6 +9,10 @@ namespace shark
     {
         namespace relutruncate
         {
+            // ============================================================
+            // Malicious security version (with MAC verification)
+            // ============================================================
+
             void gen(const shark::span<u64> &X, shark::span<u64> &Y, int f)
             {
                 always_assert(X.size() == Y.size());
@@ -109,7 +113,7 @@ namespace shark
                         d_ext_share = u128(party) - d_ext_share;
                         d_ext_tag = ring_key - d_ext_tag;
                     }
-                    
+
                     u64 idx = 4 * t_cap[i] + 2 * w_cap[i] + d_cap[i];
                     Y_share[i] = d_ext_share * (X[i] >> f) + T[i * 8 + idx];
                     Y_tag[i] = d_ext_tag * (X[i] >> f) + T_tag[i * 8 + idx];
@@ -119,15 +123,142 @@ namespace shark
 
             }
 
+            // ============================================================
+            // Semi-honest version (no MAC verification)
+            // ============================================================
+
+            void gen_sh(const shark::span<u64> &X, shark::span<u64> &Y, int f)
+            {
+                always_assert(X.size() == Y.size());
+                randomize(Y);
+
+                // Send DCF keys without MAC tags
+                send_sh_dcfbit(X, 64);
+                send_sh_dcfbit(X, f);
+
+                shark::span<u8> r_d(X.size());
+                shark::span<u8> r_w(X.size());
+                shark::span<u8> r_t(X.size());
+
+                randomize(r_d);
+                randomize(r_w);
+                randomize(r_t);
+
+                // Send boolean shares without MAC tags
+                send_sh_bshare(r_d);
+                send_sh_bshare(r_w);
+                send_sh_bshare(r_t);
+
+                shark::span<u64> T(X.size() * 8);
+                for (u64 i = 0; i < X.size(); ++i)
+                {
+                    for (u64 j = 0; j < 8; ++j)
+                    {
+                        u8 d = j % 2;
+                        u8 w = (j / 2) % 2;
+                        u8 t = (j / 4) % 2;
+
+                        if (d ^ r_d[i])
+                            T[i * 8 + j] = ((1ull << (64 - f)) * (w ^ r_w[i])) - (t ^ r_t[i]) - (X[i] >> f) + Y[i];
+                        else
+                            T[i * 8 + j] = Y[i];
+                    }
+                }
+                // Send arithmetic shares without MAC tags
+                send_sh_ashare(T);
+
+                shark::span<u64> r_d_ext(X.size());
+                for (u64 i = 0; i < X.size(); ++i)
+                {
+                    r_d_ext[i] = r_d[i];
+                }
+                send_sh_ashare(r_d_ext);
+            }
+
+            void eval_sh(const shark::span<u64> &X, shark::span<u64> &Y, int f)
+            {
+                always_assert(X.size() == Y.size());
+
+                shark::utils::start_timer("key_read");
+                // Receive DCF keys without MAC tags
+                auto dcfkeysN = recv_sh_dcfbit(X.size(), 64);
+                auto dcfkeysF = recv_sh_dcfbit(X.size(), f);
+                // Receive boolean shares without MAC tags
+                auto r_d = recv_sh_bshare(X.size());
+                auto r_w = recv_sh_bshare(X.size());
+                auto r_t = recv_sh_bshare(X.size());
+                // Receive arithmetic shares without MAC tags
+                auto T = recv_sh_ashare(X.size() * 8);
+                auto r_d_ext = recv_sh_ashare(X.size());
+                shark::utils::stop_timer("key_read");
+
+                shark::span<u8> d(X.size());
+                shark::span<u8> w(X.size());
+                shark::span<u8> t(X.size());
+                shark::span<u64> Y_share(X.size());
+
+                #pragma omp parallel for
+                for (u64 i = 0; i < X.size(); i++)
+                {
+                    auto x = X[i];
+                    auto y = x + (1ull << 63);
+
+                    // Use semi-honest DCF evaluation (returns only bit)
+                    w[i] = crypto::dcfbit_eval_sh(dcfkeysN[i], x);
+                    d[i] = crypto::dcfbit_eval_sh(dcfkeysN[i], y);
+                    t[i] = crypto::dcfbit_eval_sh(dcfkeysF[i], x);
+
+                    d[i] = xor_sh(w[i], d[i]);
+                    if (y >= (1ull << 63))
+                        d[i] = not_sh(d[i]);
+
+                    w[i] = xor_sh(w[i], r_w[i]);
+                    d[i] = xor_sh(d[i], r_d[i]);
+                    t[i] = xor_sh(t[i], r_t[i]);
+                }
+
+                // Simple reconstruct without MAC verification
+                auto d_cap = sh_reconstruct(d);
+                auto w_cap = sh_reconstruct(w);
+                auto t_cap = sh_reconstruct(t);
+
+                #pragma omp parallel for
+                for (u64 i = 0; i < X.size(); ++i)
+                {
+                    u64 d_ext_share = r_d_ext[i];
+
+                    if (d_cap[i] == 1)
+                    {
+                        d_ext_share = u64(party) - d_ext_share;
+                    }
+
+                    u64 idx = 4 * t_cap[i] + 2 * w_cap[i] + d_cap[i];
+                    Y_share[i] = d_ext_share * (X[i] >> f) + T[i * 8 + idx];
+                }
+
+                // Simple reconstruct without MAC verification
+                Y = sh_reconstruct(Y_share);
+            }
+
+            // ============================================================
+            // Unified interface (selects based on semi_honest_mode)
+            // ============================================================
+
             void call(const shark::span<u64> &X, shark::span<u64> &Y, int f)
             {
                 if (party == DEALER)
                 {
-                    gen(X, Y, f);
+                    if (semi_honest_mode)
+                        gen_sh(X, Y, f);
+                    else
+                        gen(X, Y, f);
                 }
                 else
                 {
-                    eval(X, Y, f);
+                    if (semi_honest_mode)
+                        eval_sh(X, Y, f);
+                    else
+                        eval(X, Y, f);
                 }
             }
 

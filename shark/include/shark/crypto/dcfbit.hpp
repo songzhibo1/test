@@ -55,8 +55,57 @@ namespace shark
             DCFBitKey() = default;
         };
 
-        
+
         std::pair<DCFBitKey, DCFBitKey> dcfbit_gen(int bin, const u64 alpha, const bool greaterThan = false);
         std::tuple<u8, u64> dcfbit_eval(const DCFBitKey &key, const u64 &x, const bool greaterThan = false);
+
+        // ============================================================
+        // Semi-honest version of DCFBit (no MAC tags)
+        // ============================================================
+
+        /// Semi-honest DCF key structure - no authentication tags
+        struct DCFBitKeySH
+        {
+            shark::span<block> k;       // correction words
+            shark::span<u8> v_bit;      // v correction bits (no tags)
+            u8 g_bit;                   // final correction bit
+
+            DCFBitKeySH(const shark::span<block> &k, const shark::span<u8> &v_bit, u8 g_bit)
+                : k(k), v_bit(v_bit), g_bit(g_bit)
+            {
+                int bin = k.size() - 1;
+                always_assert(bin == v_bit.size());
+            }
+
+            DCFBitKeySH(shark::span<block> &&k, shark::span<u8> &&v_bit, u8 g_bit)
+                : k(std::move(k)), v_bit(std::move(v_bit)), g_bit(g_bit)
+            {
+                int bin = this->k.size() - 1;
+                always_assert(bin == this->v_bit.size());
+            }
+
+            // move constructor
+            DCFBitKeySH(DCFBitKeySH &&other)
+                : k(std::move(other.k)), v_bit(std::move(other.v_bit)), g_bit(other.g_bit)
+            {
+            }
+
+            // move assignment
+            DCFBitKeySH &operator=(DCFBitKeySH &&other)
+            {
+                k = std::move(other.k);
+                v_bit = std::move(other.v_bit);
+                g_bit = other.g_bit;
+                return *this;
+            }
+
+            DCFBitKeySH() = default;
+        };
+
+        /// Semi-honest DCF generation - returns keys without MAC tags
+        std::pair<DCFBitKeySH, DCFBitKeySH> dcfbit_gen_sh(int bin, const u64 alpha, const bool greaterThan = false);
+
+        /// Semi-honest DCF evaluation - returns only the bit, no MAC tag
+        u8 dcfbit_eval_sh(const DCFBitKeySH &key, const u64 &x, const bool greaterThan = false);
     }
 }

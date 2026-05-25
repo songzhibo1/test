@@ -52,8 +52,49 @@ namespace shark
             DCFRingKey() = default;
         };
 
-        
+
         std::pair<DCFRingKey, DCFRingKey> dcfring_gen(int bin, const u64 alpha, const bool greaterThan = false);
         std::tuple<u128, u128> dcfring_eval(int party, const DCFRingKey &key, const u64 &x, const bool greaterThan = false);
+
+        // ============================================================
+        // Semi-honest version (no MAC tags)
+        // ============================================================
+
+        struct DCFRingKeySH
+        {
+            shark::span<block> k;
+            shark::span<u64> v_ring;  // u64 instead of u128 for semi-honest
+            u64 g_ring;
+
+            DCFRingKeySH(const shark::span<block> &k, const shark::span<u64> &v_ring, u64 g_ring)
+                : k(k), v_ring(v_ring), g_ring(g_ring)
+            {
+                int bin = k.size() - 1;
+                always_assert(bin == v_ring.size());
+            }
+
+            DCFRingKeySH(shark::span<block> &&k, shark::span<u64> &&v_ring, u64 g_ring)
+                : k(std::move(k)), v_ring(std::move(v_ring)), g_ring(g_ring)
+            {
+                int bin = this->k.size() - 1;
+                always_assert(bin == this->v_ring.size());
+            }
+
+            DCFRingKeySH(DCFRingKeySH &&other)
+                : k(std::move(other.k)), v_ring(std::move(other.v_ring)), g_ring(other.g_ring) {}
+
+            DCFRingKeySH &operator=(DCFRingKeySH &&other)
+            {
+                k = std::move(other.k);
+                v_ring = std::move(other.v_ring);
+                g_ring = other.g_ring;
+                return *this;
+            }
+
+            DCFRingKeySH() = default;
+        };
+
+        std::pair<DCFRingKeySH, DCFRingKeySH> dcfring_gen_sh(int bin, const u64 alpha, const bool greaterThan = false);
+        u64 dcfring_eval_sh(int party, const DCFRingKeySH &key, const u64 &x, const bool greaterThan = false);
     }
 }

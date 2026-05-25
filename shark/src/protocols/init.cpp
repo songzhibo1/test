@@ -2,6 +2,7 @@
 #include <shark/protocols/init.hpp>
 #include <shark/utils/assert.hpp>
 #include <fstream>
+#include <cstring>
 
 namespace shark {
     namespace protocols {
@@ -15,6 +16,8 @@ namespace shark {
                 server = new Peer(filename[0]);
                 client = new Peer(filename[1]);
 
+                // In semi-honest mode, we don't need MAC keys but still generate them
+                // to maintain compatibility
                 u64 ring_key_0 = rand<u64>();
                 u64 ring_key_1 = rand<u64>();
                 ring_key = ring_key_0;
@@ -57,6 +60,24 @@ namespace shark {
             void from_args(int argc, char ** argv)
             {
                 always_assert(argc > 1);
+
+                // Check for --semi-honest flag anywhere in arguments
+                bool use_semi_honest = false;
+                for (int i = 1; i < argc; i++)
+                {
+                    if (strcmp(argv[i], "--semi-honest") == 0 ||
+                        strcmp(argv[i], "-sh") == 0)
+                    {
+                        use_semi_honest = true;
+                    }
+                }
+
+                // Set semi-honest mode before any protocol operations
+                if (use_semi_honest)
+                {
+                    set_semi_honest_mode(true);
+                }
+
                 int _party = atoi(argv[1]);
                 always_assert(_party == DEALER || _party == SERVER || _party == CLIENT || _party == EMUL);
 
@@ -65,7 +86,7 @@ namespace shark {
                     party = EMUL;
                     return;
                 }
-                
+
                 std::string ip = (argc > 2) ? argv[2] : "127.0.0.1";
                 int port = (argc > 3) ? atoi(argv[3]) : 42069;
                 if (_party == DEALER)

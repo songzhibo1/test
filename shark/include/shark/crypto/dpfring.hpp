@@ -43,8 +43,39 @@ namespace shark
             DPFRingKey() = default;
         };
 
-        
+
         std::pair<DPFRingKey, DPFRingKey> dpfring_gen(int bin, const u64 alpha);
         std::tuple<u128, u128> dpfring_evalall_reduce(int party, const DPFRingKey &key, const std::vector<u64> &lut, u64 lut_offset);
+
+        // ============================================================
+        // Semi-honest version (no MAC tags)
+        // ============================================================
+
+        struct DPFRingKeySH
+        {
+            shark::span<block> k;
+            u64 g_ring;
+
+            DPFRingKeySH(const shark::span<block> &k, u64 g_ring)
+                : k(k), g_ring(g_ring) {}
+
+            DPFRingKeySH(shark::span<block> &&k, u64 g_ring)
+                : k(std::move(k)), g_ring(g_ring) {}
+
+            DPFRingKeySH(DPFRingKeySH &&other)
+                : k(std::move(other.k)), g_ring(other.g_ring) {}
+
+            DPFRingKeySH &operator=(DPFRingKeySH &&other)
+            {
+                k = std::move(other.k);
+                g_ring = other.g_ring;
+                return *this;
+            }
+
+            DPFRingKeySH() = default;
+        };
+
+        std::pair<DPFRingKeySH, DPFRingKeySH> dpfring_gen_sh(int bin, const u64 alpha);
+        u64 dpfring_evalall_reduce_sh(int party, const DPFRingKeySH &key, const std::vector<u64> &lut, u64 lut_offset);
     }
 }
