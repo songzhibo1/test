@@ -1,0 +1,33 @@
+network_condition = LAN
+model_key = mnist_3x256
+model_folder = vnncomp_mnist_3layer_relu_256_best
+dataset = mnist
+image_id = 0
+num_images_sent = 99
+num_images_verified = 99
+eps_list = 0.015,0.1
+returncode = 0
+
+[Timing Breakdown]
+client_end_to_end_time = 70.59267091751099
+client_socket_roundtrip_time = 70.59227299690247
+server_total_request_time = 70.591505
+server_cached_verify_time = 70.587252
+client_encrypt_time = 2.2172927856445312e-05
+client_decrypt_time = 1.33514404296875e-05
+server_decrypt_time = 4.2e-05
+server_encrypt_time = 3.3e-05
+communication_and_protocol_overhead = 0.005418917510979782
+
+[Per-eps CROWN Time]
+eps_0.015.log_total_time = 35.4527
+eps_0.015.log_numimage = 99
+eps_0.1.log_total_time = 35.1107
+eps_0.1.log_numimage = 99
+avg_time_per_image_eps = 0.3563808080808081
+
+[Communication Breakdown]
+plaintext_payload_bytes = 26927
+encrypted_request_bytes = 26955
+encrypted_response_bytes = 825
+total_encrypted_communication_bytes = 27780

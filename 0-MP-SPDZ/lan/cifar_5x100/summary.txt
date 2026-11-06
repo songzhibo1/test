@@ -1,0 +1,33 @@
+network_condition = LAN
+model_key = cifar_5x100
+model_folder = eran_cifar_5layer_relu_100_best
+dataset = cifar
+image_id = 0
+num_images_sent = 99
+num_images_verified = 99
+eps_list = 0.002,0.0078
+returncode = 0
+
+[Timing Breakdown]
+client_end_to_end_time = 107.23832130432129
+client_socket_roundtrip_time = 107.23781895637512
+server_total_request_time = 107.236932
+server_cached_verify_time = 107.227548
+client_encrypt_time = 8.988380432128906e-05
+client_decrypt_time = 1.33514404296875e-05
+server_decrypt_time = 0.000178
+server_encrypt_time = 3.2e-05
+communication_and_protocol_overhead = 0.010773304321290311
+
+[Per-eps CROWN Time]
+eps_0.002.log_total_time = 53.3875
+eps_0.002.log_numimage = 99
+eps_0.0078.log_total_time = 53.8099
+eps_0.0078.log_numimage = 99
+avg_time_per_image_eps = 0.5414010101010102
+
+[Communication Breakdown]
+plaintext_payload_bytes = 380062
+encrypted_request_bytes = 380090
+encrypted_response_bytes = 818
+total_encrypted_communication_bytes = 380908
