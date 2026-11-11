@@ -1,0 +1,11 @@
+[project]
+name = "secure-crown-cryptflow2-ot-backend"
+version = "0.1.0"
+description = "CryptFlow2/SCI-OT backend for secure CROWN verification"
+requires-python = ">=3.12"
+dependencies = [
+    "h5py>=3.16.0",
+    "numpy>=2.4.4",
+    "onnx>=1.21.0",
+]
+

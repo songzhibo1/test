@@ -1,0 +1,652 @@
+diff --git a/SCI/src/CMakeLists.txt b/SCI/src/CMakeLists.txt
+index 7d66d68..6d489c2 100644
+--- a/SCI/src/CMakeLists.txt
++++ b/SCI/src/CMakeLists.txt
+@@ -52,12 +52,18 @@ add_library(SCI-Beacon library_float_common.cpp library_float_beacon.cpp globals
+ 
+ target_link_libraries(SCI-OT PUBLIC SCI-common SCI-LinearOT SCI-GC
+     SCI-Math SCI-BuildingBlocks SCI-FloatingPoint Eigen3::Eigen)
+-target_link_libraries(SCI-HE PUBLIC SCI-common SCI-LinearHE)
++target_link_libraries(SCI-HE PUBLIC
++    SCI-common
++    SCI-LinearHE
++    SCI-Math
++    SCI-BuildingBlocks
++    SCI-FloatingPoint
++    Eigen3::Eigen)
+ target_link_libraries(SCI-SecfloatML PUBLIC SCI-FloatingPoint) 
+ target_link_libraries(SCI-Beacon PUBLIC SCI-FloatingPoint) 
+ 
+-target_compile_definitions(SCI-OT PUBLIC SCI_OT=1)
+-target_compile_definitions(SCI-HE PUBLIC SCI_HE=1)
++target_compile_definitions(SCI-OT PRIVATE SCI_OT=1)
++target_compile_definitions(SCI-HE PRIVATE SCI_HE=1)
+ 
+ install(TARGETS
+         SCI-OT
+diff --git a/SCI/src/LinearHE/defines-HE.h b/SCI/src/LinearHE/defines-HE.h
+index 01ff802..f403c3a 100644
+--- a/SCI/src/LinearHE/defines-HE.h
++++ b/SCI/src/LinearHE/defines-HE.h
+@@ -31,7 +31,8 @@ extern int32_t bitlength;
+ extern int32_t num_threads;
+ 
+ const uint64_t POLY_MOD_DEGREE = 8192;
+-const uint64_t POLY_MOD_DEGREE_LARGE = 65536;
++// 65536 is not supported by many SEAL builds; use a portable upper tier.
++const uint64_t POLY_MOD_DEGREE_LARGE = 32768;
+ const int32_t SMUDGING_BITLEN = 100 - bitlength;
+ 
+ /* Helper function for rounding to the next power of 2
+diff --git a/SCI/src/Math/math-functions.cpp b/SCI/src/Math/math-functions.cpp
+index db6c1e3..ec4eb43 100644
+--- a/SCI/src/Math/math-functions.cpp
++++ b/SCI/src/Math/math-functions.cpp
+@@ -21,6 +21,8 @@ SOFTWARE.
+ 
+ #include "Math/math-functions.h"
+ 
++#include "defines_uniform.h"
++
+ using namespace std;
+ using namespace sci;
+ 
+@@ -175,6 +177,20 @@ void MathFunctions::div(int32_t dim, uint64_t *nm, uint64_t *dn, uint64_t *out,
+     uint64_t *msnzb_vector = new uint64_t[dim * bw_dn];
+     aux->msnzb_one_hot(dn, msnzb_vector_bool, bw_dn, dim);
+     aux->B2A(msnzb_vector_bool, msnzb_vector, dim * bw_dn, bw_adjust);
++#ifdef SCI_HE
++    // In HE mode, B2A bool outputs can be affine-shifted as {delta, delta+1}.
++    // Convert them back to {0,1} shares before building adjust.
++    const int64_t delta = static_cast<int64_t>((1ULL << bitlength) - prime_mod);
++    if (delta <= 0 || delta >= static_cast<int64_t>(prime_mod)) {
++      throw std::runtime_error("MathFunctions::div: invalid HE delta for B2A correction");
++    }
++    const uint64_t delta_bw = static_cast<uint64_t>(delta) & mask_adjust;
++    if (party == ALICE) {
++      for (int i = 0; i < dim * bw_dn; ++i) {
++        msnzb_vector[i] = (msnzb_vector[i] - delta_bw) & mask_adjust;
++      }
++    }
++#endif
+     // adjust: bw = bw_dn, scale = bw_dn - 1 - s_dn
+     adjust = new uint64_t[dim];
+     for (int i = 0; i < dim; i++) {
+diff --git a/SCI/src/OT/split-iknp.h b/SCI/src/OT/split-iknp.h
+index da00b87..ee6020a 100644
+--- a/SCI/src/OT/split-iknp.h
++++ b/SCI/src/OT/split-iknp.h
+@@ -28,6 +28,7 @@ SOFTWARE.
+ #include "OT/np.h"
+ #include "OT/ot-utils.h"
+ #include "OT/ot.h"
++#include "OT/ot-phase-metrics.h"
+ #include "split-utils.h"
+ 
+ namespace sci {
+@@ -276,6 +277,7 @@ public:
+    ********************************************************/
+ 
+   void preprocess() {
++    OTPhaseMetricScope<IO> phase_scope(io, counter);
+     switch (party) {
+     case ALICE: {
+       send_pre(counter);
+@@ -944,11 +946,13 @@ public:
+    ********************************************************/
+ 
+   void send_impl(const block128 *data0, const block128 *data1, int length) {
++    RecordOTPhaseFallback(length);
+     send_pre(length);
+     got_send_post(data0, data1, length);
+   }
+ 
+   void recv_impl(block128 *data, const bool *b, int length) {
++    RecordOTPhaseFallback(length);
+     recv_pre((bool *)b, length);
+     got_recv_post(data, b, length);
+   }
+@@ -961,6 +965,7 @@ public:
+       }
+       got_send_online<uint64_t>(data, length);
+     } else {
++      RecordOTPhaseFallback(length);
+       send_pre(length);
+       got_send_post<uint64_t>(data, length);
+     }
+@@ -974,6 +979,7 @@ public:
+       }
+       got_recv_online<uint64_t>(data, b, length);
+     } else {
++      RecordOTPhaseFallback(length);
+       recv_pre((bool *)b, length);
+       got_recv_post<uint64_t>(data, b, length);
+     }
+@@ -988,6 +994,7 @@ public:
+       }
+       got_send_online<uint8_t>(data, length);
+     } else {
++      RecordOTPhaseFallback(length);
+       send_pre(length);
+       got_send_post<uint8_t>(data, length);
+     }
+@@ -1002,6 +1009,7 @@ public:
+       }
+       got_recv_online<uint8_t>(data, b, length);
+     } else {
++      RecordOTPhaseFallback(length);
+       recv_pre((bool *)b, length);
+       got_recv_post<uint8_t>(data, b, length);
+     }
+@@ -1009,12 +1017,14 @@ public:
+ 
+   void send_cot(uint64_t *data0, uint64_t *corr, int length, int l) {
+     this->l = l;
++    RecordOTPhaseFallback(length);
+     send_pre(length);
+     cot_send_post(data0, corr, length);
+   }
+ 
+   void recv_cot(uint64_t *data, bool *b, int length, int l) {
+     this->l = l;
++    RecordOTPhaseFallback(length);
+     recv_pre(b, length);
+     cot_recv_post(data, b, length);
+   }
+diff --git a/SCI/src/OT/split-kkot.h b/SCI/src/OT/split-kkot.h
+index bc6fd2c..160c970 100644
+--- a/SCI/src/OT/split-kkot.h
++++ b/SCI/src/OT/split-kkot.h
+@@ -31,6 +31,7 @@ SOFTWARE.
+ #include "OT/np.h"
+ #include "OT/ot-utils.h"
+ #include "OT/ot.h"
++#include "OT/ot-phase-metrics.h"
+ #include "OT/split-utils.h"
+ 
+ namespace sci {
+@@ -232,6 +233,7 @@ public:
+   }
+ 
+   void preprocess() {
++    OTPhaseMetricScope<IO> phase_scope(io, counter);
+     switch (party) {
+     case ALICE:
+       send_pre(counter);
+@@ -549,6 +551,7 @@ public:
+       }
+       got_send_online<uint8_t>(data, length);
+     } else {
++      RecordOTPhaseFallback(length);
+       send_pre(length);
+       got_send_post<uint8_t>(data, length);
+     }
+@@ -565,6 +568,7 @@ public:
+       }
+       got_recv_online<uint8_t>(data, b, length);
+     } else {
++      RecordOTPhaseFallback(length);
+       recv_pre(b, length);
+       got_recv_post<uint8_t>(data, b, length);
+     }
+@@ -580,6 +584,7 @@ public:
+       }
+       got_send_online<uint64_t>(data, length);
+     } else {
++      RecordOTPhaseFallback(length);
+       send_pre(length);
+       got_send_post<uint64_t>(data, length);
+     }
+@@ -595,6 +600,7 @@ public:
+       }
+       got_recv_online<uint64_t>(data, b, length);
+     } else {
++      RecordOTPhaseFallback(length);
+       recv_pre(b, length);
+       got_recv_post<uint64_t>(data, b, length);
+     }
+diff --git a/SCI/src/cleartext_library_float.cpp b/SCI/src/cleartext_library_float.cpp
+index 642496c..a678f7c 100644
+--- a/SCI/src/cleartext_library_float.cpp
++++ b/SCI/src/cleartext_library_float.cpp
+@@ -22,6 +22,7 @@ SOFTWARE.
+ #include "cleartext_library_float.h"
+ #include "math.h"
+ #include "float.h"
++#include <cstdint>
+ 
+ using namespace std ;
+ 
+diff --git a/SCI/src/library_fixed_uniform.cpp b/SCI/src/library_fixed_uniform.cpp
+index c4a8d40..abcd068 100644
+--- a/SCI/src/library_fixed_uniform.cpp
++++ b/SCI/src/library_fixed_uniform.cpp
+@@ -22,6 +22,11 @@ SOFTWARE.
+ #include "library_fixed_uniform.h"
+ #include "functionalities_uniform.h"
+ #include "library_fixed_common.h"
++#include "OT/ot-phase-metrics.h"
++#include <algorithm>
++#include <atomic>
++#include <cstdlib>
++#include <cstring>
+ #ifdef SCI_HE
+ uint64_t prime_mod = sci::default_prime_mod.at(bitlength);
+ #elif SCI_OT
+@@ -51,6 +56,24 @@ uint64_t getRingElt(int64_t x) {
+ 
+ using namespace std;
+ 
++namespace sci {
++bool ot_phase_metrics_enabled = false;
++std::atomic<uint64_t> ot_phase_preprocess_calls{0};
++std::atomic<uint64_t> ot_phase_preprocess_time_us{0};
++std::atomic<uint64_t> ot_phase_preprocess_comm_bytes{0};
++std::atomic<uint64_t> ot_phase_fallback_calls{0};
++std::atomic<uint64_t> ot_phase_fallback_ots{0};
++std::atomic<uint64_t> ot_phase_preprocess_ots{0};
++} // namespace sci
++
++#ifdef SCI_HE
++static void init_he_beaver_pool_field_offline();
++static uint64_t he_beaver_total_used = 0;
++static uint64_t he_beaver_refill_count = 0;
++static uint64_t he_beaver_online_fallback_count = 0;
++static int32_t he_beaver_pool_size_last = 0;
++#endif
++
+ void MatMul2D(int32_t s1, int32_t s2, int32_t s3, const intType *A,
+               const intType *B, intType *C, bool modelIsA) {
+ #ifdef LOG_LAYERWISE
+@@ -122,7 +145,7 @@ void MatMul2D(int32_t s1, int32_t s2, int32_t s3, const intType *A,
+       for (int i = 0; i < s1 * s2; i++)
+         assert(A[i] == 0);
+     } else {
+-      for (int i = 0; i < s1 * s2; i++)
++      for (int i = 0; i < s2 * s3; i++)
+         assert(B[i] == 0);
+     }
+ #endif
+@@ -170,7 +193,7 @@ void MatMul2D(int32_t s1, int32_t s2, int32_t s3, const intType *A,
+       for (int i = 0; i < s1 * s2; i++)
+         assert(A[i] == 0);
+     } else {
+-      for (int i = 0; i < s1 * s2; i++)
++      for (int i = 0; i < s2 * s3; i++)
+         assert(B[i] == 0);
+     }
+ #endif
+@@ -184,29 +207,30 @@ void MatMul2D(int32_t s1, int32_t s2, int32_t s3, const intType *A,
+   }
+ 
+ #elif defined(SCI_HE)
+-  // We only support matrix vector multiplication.
++  // SCI-HE FC backend supports matrix x vector natively (num_cols == 1).
++  // For generic matrix multiplication C = A[s1 x s2] * B[s2 x s3] with
++  // modelIsA == false, compute each row of A against model columns in B via
++  // repeated matrix-vector products on B^T.
+   assert(modelIsA == false &&
+          "Assuming code generated by compiler produces B as the model.");
+-  std::vector<std::vector<intType>> At(s2);
++
+   std::vector<std::vector<intType>> Bt(s3);
+-  std::vector<std::vector<intType>> Ct(s3);
+-  for (int i = 0; i < s2; i++) {
+-    At[i].resize(s1);
+-    for (int j = 0; j < s1; j++) {
+-      At[i][j] = getRingElt(Arr2DIdxRowM(A, s1, s2, j, i));
+-    }
+-  }
+   for (int i = 0; i < s3; i++) {
+     Bt[i].resize(s2);
+-    Ct[i].resize(s1);
+     for (int j = 0; j < s2; j++) {
+       Bt[i][j] = getRingElt(Arr2DIdxRowM(B, s2, s3, j, i));
+     }
+   }
+-  he_fc->matrix_multiplication(s3, s2, s1, Bt, At, Ct);
+-  for (int i = 0; i < s1; i++) {
+-    for (int j = 0; j < s3; j++) {
+-      Arr2DIdxRowM(C, s1, s3, i, j) = getRingElt(Ct[j][i]);
++
++  std::vector<std::vector<intType>> Avec(s2, std::vector<intType>(1));
++  std::vector<std::vector<intType>> Ct(s3, std::vector<intType>(1));
++  for (int row = 0; row < s1; ++row) {
++    for (int k = 0; k < s2; ++k) {
++      Avec[k][0] = getRingElt(Arr2DIdxRowM(A, s1, s2, row, k));
++    }
++    he_fc->matrix_multiplication(s3, s2, 1, Bt, Avec, Ct);
++    for (int col = 0; col < s3; ++col) {
++      Arr2DIdxRowM(C, s1, s3, row, col) = getRingElt(Ct[col][0]);
+     }
+   }
+ #endif
+@@ -710,23 +734,6 @@ void ElemWiseActModelVectorMult(int32_t size, intType *inArr,
+ 
+ #endif // SCI_OT
+ 
+-#ifdef SCI_HE
+-  std::vector<uint64_t> tempInArr(size);
+-  std::vector<uint64_t> tempOutArr(size);
+-  std::vector<uint64_t> tempMultArr(size);
+-
+-  for (int i = 0; i < size; i++) {
+-    tempInArr[i] = getRingElt(inArr[i]);
+-    tempMultArr[i] = getRingElt(multArrVec[i]);
+-  }
+-
+-  he_prod->elemwise_product(size, tempInArr, tempMultArr, tempOutArr);
+-
+-  for (int i = 0; i < size; i++) {
+-    outputArr[i] = getRingElt(tempOutArr[i]);
+-  }
+-#endif
+-
+ #ifdef LOG_LAYERWISE
+   auto temp = TIMER_TILL_NOW;
+   BatchNormInMilliSec += temp;
+@@ -1661,6 +1668,29 @@ void StartComputation() {
+   math = mathArr[0];
+ #endif
+ 
++#ifdef SCI_HE
++  for (int i = 0; i < num_threads; i++) {
++    if (i & 1) {
++      auxArr[i] = new AuxProtocols(3 - party, iopackArr[i], otpackArr[i]);
++      truncationArr[i] =
++          new Truncation(3 - party, iopackArr[i], otpackArr[i]);
++      xtArr[i] = new XTProtocol(3 - party, iopackArr[i], otpackArr[i]);
++      mathArr[i] = new MathFunctions(3 - party, iopackArr[i], otpackArr[i]);
++    } else {
++      auxArr[i] = new AuxProtocols(party, iopackArr[i], otpackArr[i]);
++      truncationArr[i] =
++          new Truncation(party, iopackArr[i], otpackArr[i]);
++      xtArr[i] = new XTProtocol(party, iopackArr[i], otpackArr[i]);
++      mathArr[i] = new MathFunctions(party, iopackArr[i], otpackArr[i]);
++    }
++  }
++  aux = auxArr[0];
++  truncation = truncationArr[0];
++  xt = xtArr[0];
++  math = mathArr[0];
++  init_he_beaver_pool_field_offline();
++#endif
++
+   if (party == sci::ALICE) {
+     iknpOT->setup_send();
+     iknpOTRoleReversed->setup_recv();
+@@ -1721,6 +1751,16 @@ void EndComputation() {
+   }
+   std::cout << "------------------------------------------------------\n";
+ 
++#ifdef SCI_HE
++  if (party == CLIENT) {
++    std::cout << "[he-beaver] stats used=" << he_beaver_total_used
++              << " pool_size=" << he_beaver_pool_size_last
++              << " refill_count=" << he_beaver_refill_count
++              << " online_fallback_count=" << he_beaver_online_fallback_count
++              << std::endl;
++  }
++#endif
++
+ #ifdef LOG_LAYERWISE
+   std::cout << "Total time in Conv = " << (ConvTimeInMilliSec / 1000.0)
+             << " seconds." << std::endl;
+@@ -1975,6 +2015,215 @@ intType SecretSub(intType x, intType y) {
+ #endif
+ }
+ 
++#ifdef SCI_HE
++static inline intType field_mul_local(intType x, intType y) {
++  const uint64_t p = static_cast<uint64_t>(prime_mod);
++  const uint64_t xm = static_cast<uint64_t>(x) % p;
++  const uint64_t ym = static_cast<uint64_t>(y) % p;
++  const unsigned __int128 prod =
++      static_cast<unsigned __int128>(xm) * static_cast<unsigned __int128>(ym);
++  return static_cast<intType>(static_cast<uint64_t>(prod % p));
++}
++
++struct BeaverTriplePoolField {
++  bool enabled = false;
++  int32_t pool_size = 0;
++  int32_t cursor = 0;
++  uint64_t total_used = 0;
++  uint64_t refill_count = 0;
++  uint64_t online_fallback_count = 0;
++  std::vector<intType> a;
++  std::vector<intType> b;
++  std::vector<intType> c;
++};
++
++static BeaverTriplePoolField he_beaver_pool_field;
++
++static int32_t get_he_beaver_pool_size() {
++  const char *v = std::getenv("SCI_HE_BEAVER_POOL");
++  if (v == nullptr) {
++    return 65536;
++  }
++  const long parsed = std::strtol(v, nullptr, 10);
++  if (parsed <= 0) {
++    return 0;
++  }
++  const long capped = std::min<long>(parsed, 1 << 20);
++  return static_cast<int32_t>(capped);
++}
++
++static void field_open_to_all(int32_t size, const intType *share,
++                              intType *opened) {
++  std::vector<intType> other((size_t)size, 0);
++  if (party == SERVER) {
++    io->send_data(share, sizeof(intType) * size);
++    io->recv_data(other.data(), sizeof(intType) * size);
++  } else {
++    io->recv_data(other.data(), sizeof(intType) * size);
++    io->send_data(share, sizeof(intType) * size);
++  }
++  for (int i = 0; i < size; ++i) {
++    opened[i] =
++        sci::neg_mod((int64_t)share[i] + (int64_t)other[(size_t)i],
++                     (int64_t)prime_mod);
++  }
++}
++
++static void he_asymmetric_field_mul(int32_t size, const intType *bob_input_share,
++                                    const intType *alice_multiplier_share,
++                                    intType *out_share) {
++  assert(he_prod != nullptr && "he_prod must be initialized for SCI_HE");
++  std::vector<uint64_t> in_vec((size_t)size, 0);
++  std::vector<uint64_t> mult_vec((size_t)size, 0);
++  std::vector<uint64_t> out_vec((size_t)size, 0);
++  const uint64_t p = static_cast<uint64_t>(prime_mod);
++
++  for (int i = 0; i < size; ++i) {
++    in_vec[(size_t)i] = static_cast<uint64_t>(bob_input_share[i]) % p;
++    mult_vec[(size_t)i] = static_cast<uint64_t>(alice_multiplier_share[i]) % p;
++  }
++  he_prod->elemwise_product(size, in_vec, mult_vec, out_vec, false, false);
++  for (int i = 0; i < size; ++i) {
++    out_share[i] = static_cast<intType>(out_vec[(size_t)i] % p);
++  }
++}
++
++static void generate_online_beaver_triple_field(int32_t size, intType *a_share,
++                                                intType *b_share,
++                                                intType *c_share) {
++  std::vector<intType> a_alice((size_t)size, 0), b_alice((size_t)size, 0);
++  std::vector<intType> a_bob((size_t)size, 0), b_bob((size_t)size, 0);
++  if (party == SERVER) {
++    prg128Instance->random_mod_p<uint64_t>((uint64_t *)a_alice.data(), size,
++                                           prime_mod);
++    prg128Instance->random_mod_p<uint64_t>((uint64_t *)b_alice.data(), size,
++                                           prime_mod);
++    memcpy(a_share, a_alice.data(), sizeof(intType) * size);
++    memcpy(b_share, b_alice.data(), sizeof(intType) * size);
++  } else {
++    prg128Instance->random_mod_p<uint64_t>((uint64_t *)a_bob.data(), size,
++                                           prime_mod);
++    prg128Instance->random_mod_p<uint64_t>((uint64_t *)b_bob.data(), size,
++                                           prime_mod);
++    memcpy(a_share, a_bob.data(), sizeof(intType) * size);
++    memcpy(b_share, b_bob.data(), sizeof(intType) * size);
++  }
++
++  std::vector<intType> cross_ab((size_t)size, 0);
++  std::vector<intType> cross_ba((size_t)size, 0);
++  he_asymmetric_field_mul(size, b_bob.data(), a_alice.data(), cross_ab.data());
++  he_asymmetric_field_mul(size, a_bob.data(), b_alice.data(), cross_ba.data());
++
++  for (int i = 0; i < size; ++i) {
++    intType local_term = 0;
++    if (party == SERVER) {
++      local_term = field_mul_local(a_alice[(size_t)i], b_alice[(size_t)i]);
++    } else {
++      local_term = field_mul_local(a_bob[(size_t)i], b_bob[(size_t)i]);
++    }
++    c_share[i] =
++        SecretAdd(SecretAdd(cross_ab[(size_t)i], cross_ba[(size_t)i]),
++                  local_term);
++  }
++}
++
++static void refill_he_beaver_pool_field() {
++  if (!he_beaver_pool_field.enabled || he_beaver_pool_field.pool_size <= 0) {
++    return;
++  }
++  he_beaver_pool_field.refill_count++;
++  he_beaver_refill_count++;
++  he_beaver_pool_field.cursor = 0;
++  he_beaver_pool_field.a.assign((size_t)he_beaver_pool_field.pool_size, 0);
++  he_beaver_pool_field.b.assign((size_t)he_beaver_pool_field.pool_size, 0);
++  he_beaver_pool_field.c.assign((size_t)he_beaver_pool_field.pool_size, 0);
++  generate_online_beaver_triple_field(
++      he_beaver_pool_field.pool_size, he_beaver_pool_field.a.data(),
++      he_beaver_pool_field.b.data(), he_beaver_pool_field.c.data());
++}
++
++static void fetch_beaver_triple_field(int32_t size, intType *a_share,
++                                      intType *b_share, intType *c_share) {
++  he_beaver_pool_field.total_used += static_cast<uint64_t>(size);
++  he_beaver_total_used += static_cast<uint64_t>(size);
++  if (he_beaver_pool_field.enabled && he_beaver_pool_field.pool_size >= size &&
++      he_beaver_pool_field.pool_size > 0) {
++    const int32_t remain =
++        he_beaver_pool_field.pool_size - he_beaver_pool_field.cursor;
++    if (remain < size) {
++      refill_he_beaver_pool_field();
++    }
++    const size_t off = (size_t)he_beaver_pool_field.cursor;
++    std::memcpy(a_share, he_beaver_pool_field.a.data() + off,
++                sizeof(intType) * size);
++    std::memcpy(b_share, he_beaver_pool_field.b.data() + off,
++                sizeof(intType) * size);
++    std::memcpy(c_share, he_beaver_pool_field.c.data() + off,
++                sizeof(intType) * size);
++    he_beaver_pool_field.cursor += size;
++    return;
++  }
++  he_beaver_pool_field.online_fallback_count++;
++  he_beaver_online_fallback_count++;
++  generate_online_beaver_triple_field(size, a_share, b_share, c_share);
++}
++
++static void init_he_beaver_pool_field_offline() {
++  he_beaver_pool_field.pool_size = get_he_beaver_pool_size();
++  he_beaver_pool_size_last = he_beaver_pool_field.pool_size;
++  he_beaver_pool_field.enabled = (he_beaver_pool_field.pool_size > 0);
++  he_beaver_pool_field.cursor = 0;
++  he_beaver_pool_field.total_used = 0;
++  he_beaver_pool_field.refill_count = 0;
++  he_beaver_pool_field.online_fallback_count = 0;
++  he_beaver_total_used = 0;
++  he_beaver_refill_count = 0;
++  he_beaver_online_fallback_count = 0;
++  if (he_beaver_pool_field.enabled) {
++    refill_he_beaver_pool_field();
++    if (party == CLIENT) {
++      std::cout << "[he-beaver] offline pool initialized size="
++                << he_beaver_pool_field.pool_size << std::endl;
++    }
++  } else if (party == CLIENT) {
++    std::cout << "[he-beaver] offline pool disabled, pure online triples"
++              << std::endl;
++  }
++}
++
++static void elemwise_secret_shared_vector_mult_field_beaver(
++    int32_t size, intType *inArr, intType *multArrVec, intType *outputArr) {
++  std::vector<intType> a_share((size_t)size, 0), b_share((size_t)size, 0),
++      c_share((size_t)size, 0);
++  std::vector<intType> d_share((size_t)size, 0), e_share((size_t)size, 0);
++  std::vector<intType> d_open((size_t)size, 0), e_open((size_t)size, 0);
++
++  fetch_beaver_triple_field(size, a_share.data(), b_share.data(),
++                            c_share.data());
++
++  for (int i = 0; i < size; ++i) {
++    d_share[(size_t)i] = SecretSub(inArr[i], a_share[(size_t)i]);
++    e_share[(size_t)i] = SecretSub(multArrVec[i], b_share[(size_t)i]);
++  }
++
++  field_open_to_all(size, d_share.data(), d_open.data());
++  field_open_to_all(size, e_share.data(), e_open.data());
++
++  for (int i = 0; i < size; ++i) {
++    intType out_i = c_share[(size_t)i];
++    out_i = SecretAdd(out_i,
++                      field_mul_local(d_open[(size_t)i], b_share[(size_t)i]));
++    out_i = SecretAdd(out_i,
++                      field_mul_local(e_open[(size_t)i], a_share[(size_t)i]));
++    if (party == SERVER) {
++      out_i = SecretAdd(
++          out_i, field_mul_local(d_open[(size_t)i], e_open[(size_t)i]));
++    }
++    outputArr[i] = out_i;
++  }
++}
++#endif
++
+ intType SecretMult(intType x, intType y) {
+   // Not being used in any of our networks right now
+   assert(false);
+@@ -2003,7 +2252,7 @@ void ElemWiseSecretSharedVectorMult(int32_t size, intType *inArr,
+   INIT_TIMER;
+ #endif
+   static int batchNormCtr = 1;
+-  std::cout << "Starting fused batchNorm #" << batchNormCtr << std::endl;
++  // std::cout << "Starting fused batchNorm #" << batchNormCtr << std::endl;
+   batchNormCtr++;
+ 
+ #ifdef SCI_OT
+@@ -2035,6 +2284,11 @@ void ElemWiseSecretSharedVectorMult(int32_t size, intType *inArr,
+   }
+ #endif
+ 
++#ifdef SCI_HE
++  elemwise_secret_shared_vector_mult_field_beaver(size, inArr, multArrVec,
++                                                  outputArr);
++#endif
++
+ #ifdef LOG_LAYERWISE
+   auto temp = TIMER_TILL_NOW;
+   BatchNormInMilliSec += temp;
+diff --git a/SCI/tests/CMakeLists.txt b/SCI/tests/CMakeLists.txt
+index 3254d7c..5fa131e 100644
+--- a/SCI/tests/CMakeLists.txt
++++ b/SCI/tests/CMakeLists.txt
+@@ -1,11 +1,13 @@
+ macro (add_test_OT _name)
+ 	add_executable(${_name}-OT "test_ring_${_name}.cpp")
+-    target_link_libraries(${_name}-OT SCI-OT) 
++	    target_link_libraries(${_name}-OT SCI-OT)
++	    target_compile_definitions(${_name}-OT PRIVATE SCI_OT=1)
+ endmacro()
+ 
+ macro (add_test_HE _name)
+-    add_executable(${_name}-HE "test_field_${_name}.cpp")
+-    target_link_libraries(${_name}-HE SCI-HE) 
++	    add_executable(${_name}-HE "test_field_${_name}.cpp")
++	    target_link_libraries(${_name}-HE SCI-HE)
++	    target_compile_definitions(${_name}-HE PRIVATE SCI_HE=1)
+ endmacro()
+ 
+ macro (add_test_float _name)
