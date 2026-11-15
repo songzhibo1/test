@@ -1,0 +1,19 @@
+[System] 使用设备: cpu
+[Data] 准备 CIFAR-100 真实数据集...
+[Model] 正在加载 CIFAR-100 预训练 ResNet-56 (Deep Architecture)...
+  -> [Original Baseline] Acc: 72.75% | MSE: 0.000000 | Key: N/A
+[Check] ResNet-56 基准精度: 72.75% (预期 > 70%)
+准备执行 ResNet-56 + CIFAR-100 实验...
+
+
+============================================================
+实验: Exp_ResNet56_FullLock
+配置: 混淆点=[1, 2, 3], Alpha范围=(3.0, 8.0)
+------------------------------------------------------------
+[Setup] 密钥因子 r_key: 14.0607
+  -> [Authorized] Acc: 72.75% | MSE: 0.000000 | Key: 14.0607
+  -> [Attacker] Acc: 1.10% | MSE: 13.095226 | Key: 1.0000
+[Check] ✅ 授权验证成功 (精度保持)
+[Check] ✅ 攻击防御成功 (精度 < 5%)
+
+实验结束。数据已写入 log_resnet56_cifar100.txt

@@ -1,0 +1,26 @@
+[System] 使用设备: cpu
+[Data] 准备 ImageNet 规格模拟数据 (FakeData)...
+[Model] 加载 ImageNet 预训练 ResNet-18 (原生1000类)...
+  -> [Original Baseline] Acc: 0.00% | MSE: 0.000000 | Key: N/A
+准备执行 2 组实验 (基于 ImageNet 规格数据)...
+
+
+============================================================
+实验: Exp_Single_Layer4
+配置: 混淆点=[4], Alpha=(2.0, 3.0)
+[Setup] 密钥因子 r_key: 47.9744
+  -> [Authorized] Acc: 0.00% | MSE: 0.000000 | Key: 47.9744
+  -> [Attacker] Acc: 0.00% | MSE: 2.043890 | Key: 1.0000
+[Check] ✅ 授权验证成功 (MSE=0)
+[Check] ✅ 攻击防御成功 (High MSE)
+
+============================================================
+实验: Exp_Multi_Full_Deep
+配置: 混淆点=[1, 2, 3, 4], Alpha=(3.0, 8.0)
+[Setup] 密钥因子 r_key: 40.0711
+  -> [Authorized] Acc: 0.00% | MSE: 0.000000 | Key: 40.0711
+  -> [Attacker] Acc: 0.20% | MSE: 2.149708 | Key: 1.0000
+[Check] ✅ 授权验证成功 (MSE=0)
+[Check] ✅ 攻击防御成功 (High MSE)
+
+实验结束。

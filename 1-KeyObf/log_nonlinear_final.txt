@@ -1,0 +1,18 @@
+[System] 使用设备: cpu
+[Data] 准备 CIFAR-100 数据集...
+[Model] 加载 CIFAR-100 ResNet-56...
+   |-- Original Baseline    | Acc:  72.75% | MSE: 0.000000 | Key: N/A
+[Check] 原始模型基准精度: 72.75% (Baseline)
+
+================================================================================
+开始执行非线性混淆实验 (定理 3.2 验证)
+================================================================================
+
+>>> 实验组: Exp_NonLinear_Theory_Verify
+    [Setup] 授权密钥因子 r_key: 26.3663
+   |-- Authorized (User A)  | Acc:   1.05% | MSE: 139.189884 | Key: 26.3663
+   |-- Attacker (No Key)    | Acc:   1.10% | MSE: 13.551305 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:   0.80% | MSE: 347.439203 | Key: 29.1458
+    [Done] 组 Exp_NonLinear_Theory_Verify 完成。
+
+所有实验结束。请查看 log_nonlinear_final.txt。

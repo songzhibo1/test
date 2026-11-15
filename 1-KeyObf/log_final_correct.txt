@@ -1,0 +1,37 @@
+[System] 使用设备: cpu
+   |-- Baseline             | Acc:  72.75% | MSE: 0.000000 | Key: N/A
+[Check] 原始模型基准精度: 72.75% (Baseline)
+
+================================================================================
+开始执行论文完整实验 (Final Fixed)
+================================================================================
+
+>>> 实验组: Exp 1-1 (单层)
+    [Setup] User A 密钥因子: 26.8102
+   |-- Authorized           | Acc:  72.75% | MSE: 3.812034 | Key: 26.8102
+   |-- Attacker             | Acc:   0.75% | MSE: 24.696356 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:  66.60% | MSE: 0.686120 | Key: 16.1987
+    [Done] 组 Exp 1-1 (单层) 完成。
+
+>>> 实验组: Exp 1-3 (全层)
+    [Setup] User A 密钥因子: 26.8102
+   |-- Authorized           | Acc:  59.10% | MSE: 0.388282 | Key: 26.8102
+   |-- Attacker             | Acc:   1.10% | MSE: 13.082379 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:   2.35% | MSE: 14.034649 | Key: 16.1987
+    [Done] 组 Exp 1-3 (全层) 完成。
+
+>>> 实验组: Exp 2-1 (弱混淆)
+    [Setup] User A 密钥因子: 26.8102
+   |-- Authorized           | Acc:  54.25% | MSE: 0.120378 | Key: 26.8102
+   |-- Attacker             | Acc:   1.10% | MSE: 12.998247 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:   2.10% | MSE: 13.708572 | Key: 16.1987
+    [Done] 组 Exp 2-1 (弱混淆) 完成。
+
+>>> 实验组: Exp 2-2 (强混淆)
+    [Setup] User A 密钥因子: 26.8102
+   |-- Authorized           | Acc:  49.80% | MSE: 21.919030 | Key: 26.8102
+   |-- Attacker             | Acc:   1.10% | MSE: 15.544023 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:   2.05% | MSE: 12.539086 | Key: 16.1987
+    [Done] 组 Exp 2-2 (强混淆) 完成。
+
+所有实验结束。

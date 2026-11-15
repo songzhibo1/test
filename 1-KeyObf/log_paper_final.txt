@@ -1,0 +1,61 @@
+[System] 使用设备: cpu
+[Data] 准备 CIFAR-100 数据集...
+[Model] 加载 CIFAR-100 ResNet-56...
+   |-- Original Baseline    | Acc:  72.75% | MSE: 0.000000 | Key: N/A
+[Check] 原始模型基准精度: 72.75% (Baseline)
+
+================================================================================
+开始执行论文实验 (共 5 组)
+================================================================================
+
+>>> 实验组: Exp 1-1 (单层混淆 - 脆弱)
+    混淆点位: [3]  (0=Init, 1=L1, 2=L2, 3=L3/Final)
+    Alpha范围: (3.0, 8.0)
+    [Setup] User A (授权) 密钥因子: 47.8900
+   |-- Authorized (User A)  | Acc:  72.75% | MSE: 0.000000 | Key: 47.8900
+   |-- Attacker (No Key)    | Acc:  71.80% | MSE: 12.565893 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:  72.75% | MSE: 0.000000 | Key: 47.8900
+    [Info] User B 试图使用的密钥因子: 47.8900
+    [Done] 组 Exp 1-1 (单层混淆 - 脆弱) 完成。
+
+>>> 实验组: Exp 1-2 (双层混淆 - 提升)
+    混淆点位: [0, 3]  (0=Init, 1=L1, 2=L2, 3=L3/Final)
+    Alpha范围: (3.0, 8.0)
+    [Setup] User A (授权) 密钥因子: 47.8900
+   |-- Authorized (User A)  | Acc:  72.75% | MSE: 0.000000 | Key: 47.8900
+   |-- Attacker (No Key)    | Acc:   0.55% | MSE: 13.098031 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:  72.75% | MSE: 0.000000 | Key: 47.8900
+    [Info] User B 试图使用的密钥因子: 47.8900
+    [Done] 组 Exp 1-2 (双层混淆 - 提升) 完成。
+
+>>> 实验组: Exp 1-3 (全层混淆 - 极致安全)
+    混淆点位: [0, 1, 2, 3]  (0=Init, 1=L1, 2=L2, 3=L3/Final)
+    Alpha范围: (3.0, 8.0)
+    [Setup] User A (授权) 密钥因子: 47.8900
+   |-- Authorized (User A)  | Acc:  72.75% | MSE: 0.000000 | Key: 47.8900
+   |-- Attacker (No Key)    | Acc:   1.10% | MSE: 13.094305 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:  72.75% | MSE: 0.000000 | Key: 47.8900
+    [Info] User B 试图使用的密钥因子: 47.8900
+    [Done] 组 Exp 1-3 (全层混淆 - 极致安全) 完成。
+
+>>> 实验组: Exp 2-1 (弱混淆强度)
+    混淆点位: [0, 1, 2, 3]  (0=Init, 1=L1, 2=L2, 3=L3/Final)
+    Alpha范围: (1.2, 1.5)
+    [Setup] User A (授权) 密钥因子: 47.8900
+   |-- Authorized (User A)  | Acc:  72.75% | MSE: 0.000000 | Key: 47.8900
+   |-- Attacker (No Key)    | Acc:   1.10% | MSE: 13.094305 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:  72.75% | MSE: 0.000000 | Key: 47.8900
+    [Info] User B 试图使用的密钥因子: 47.8900
+    [Done] 组 Exp 2-1 (弱混淆强度) 完成。
+
+>>> 实验组: Exp 2-2 (强混淆强度)
+    混淆点位: [0, 1, 2, 3]  (0=Init, 1=L1, 2=L2, 3=L3/Final)
+    Alpha范围: (10.0, 20.0)
+    [Setup] User A (授权) 密钥因子: 47.8900
+   |-- Authorized (User A)  | Acc:  72.75% | MSE: 0.000000 | Key: 47.8900
+   |-- Attacker (No Key)    | Acc:   1.10% | MSE: 13.094305 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:  72.75% | MSE: 0.000000 | Key: 47.8900
+    [Info] User B 试图使用的密钥因子: 47.8900
+    [Done] 组 Exp 2-2 (强混淆强度) 完成。
+
+所有实验结束。请查看 log_paper_final.txt。

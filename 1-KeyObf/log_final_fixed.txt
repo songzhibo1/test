@@ -1,0 +1,86 @@
+[System] 使用设备: cpu
+[Data] 准备 CIFAR-100 数据集...
+[Model] 加载 CIFAR-100 ResNet-56...
+   |-- Original Baseline    | Acc:  72.75% | MSE: 0.000000 | Key: N/A
+[Check] 原始模型基准精度: 72.75% (Baseline)
+
+================================================================================
+开始执行论文实验 (共 4 组)
+================================================================================
+
+>>> 实验组: Exp 1-1 (单层混淆)
+    混淆点位: [3]  Alpha范围: (3.0, 8.0)
+    [Setup] 合法密钥因子 r_key: 41.3459
+   |-- Authorized           | Acc:  72.75% | MSE: 0.000000 | Key: 41.3459
+   |-- Attacker (No Key)    | Acc:  72.10% | MSE: 12.481204 | Key: 1.0000
+   |-- Wrong Key (Random)   | Acc:  72.60% | MSE: 5.622762 | Key: 14.2661
+    [Done] 组 Exp 1-1 (单层混淆) 完成。
+
+>>> 实验组: Exp 1-3 (全层混淆)
+    混淆点位: [0, 1, 2, 3]  Alpha范围: (3.0, 8.0)
+    [Setup] 合法密钥因子 r_key: 41.3459
+   |-- Authorized           | Acc:  72.75% | MSE: 0.000000 | Key: 41.3459
+   |-- Attacker (No Key)    | Acc:   1.10% | MSE: 13.092993 | Key: 1.0000
+   |-- Wrong Key (Random)   | Acc:   2.15% | MSE: 15.277825 | Key: 20.6403
+    [Done] 组 Exp 1-3 (全层混淆) 完成。
+
+>>> 实验组: Exp 2-1 (弱混淆)
+    混淆点位: [0, 1, 2, 3]  Alpha范围: (1.2, 1.5)
+    [Setup] 合法密钥因子 r_key: 41.3459
+   |-- Authorized           | Acc:  72.75% | MSE: 0.000000 | Key: 41.3459
+   |-- Attacker (No Key)    | Acc:   1.10% | MSE: 13.092993 | Key: 1.0000
+   |-- Wrong Key (Random)   | Acc:  38.75% | MSE: 7.509463 | Key: 32.1211
+    [Done] 组 Exp 2-1 (弱混淆) 完成。
+
+>>> 实验组: Exp 2-2 (强混淆)
+    混淆点位: [0, 1, 2, 3]  Alpha范围: (10.0, 20.0)
+    [Setup] 合法密钥因子 r_key: 41.3459
+   |-- Authorized           | Acc:  72.75% | MSE: 0.000000 | Key: 41.3459
+   |-- Attacker (No Key)    | Acc:   1.10% | MSE: 13.092993 | Key: 1.0000
+   |-- Wrong Key (Random)   | Acc:   2.75% | MSE: 15.561744 | Key: 22.2008
+    [Done] 组 Exp 2-2 (强混淆) 完成。
+
+所有实验结束。请查看 log_final_fixed.txt。
+[System] 使用设备: cpu
+[Data] 准备 CIFAR-100 数据集...
+[Model] 加载 CIFAR-100 ResNet-56...
+   |-- Original Baseline    | Acc:  72.75% | MSE: 0.000000 | Key: N/A
+[Check] 原始模型基准精度: 72.75% (Baseline)
+
+================================================================================
+开始执行论文实验 (共 4 组)
+================================================================================
+
+>>> 实验组: Exp 1-1 (单层混淆)
+    混淆点位: [0]  Alpha范围: (3.0, 8.0)
+    [Setup] 合法密钥因子 r_key: 30.6562
+   |-- Authorized           | Acc:  72.75% | MSE: 0.000000 | Key: 30.6562
+   |-- Attacker (No Key)    | Acc:   0.65% | MSE: 27.777967 | Key: 1.0000
+   |-- Wrong Key (Random)   | Acc:  64.70% | MSE: 2.468734 | Key: 17.0909
+    [Done] 组 Exp 1-1 (单层混淆) 完成。
+
+>>> 实验组: Exp 1-3 (全层混淆)
+    混淆点位: [0, 1, 2, 3]  Alpha范围: (3.0, 8.0)
+    [Setup] 合法密钥因子 r_key: 30.6562
+   |-- Authorized           | Acc:  72.75% | MSE: 0.000000 | Key: 30.6562
+   |-- Attacker (No Key)    | Acc:   1.10% | MSE: 13.090596 | Key: 1.0000
+   |-- Wrong Key (Random)   | Acc:  21.25% | MSE: 10.677927 | Key: 22.0458
+    [Done] 组 Exp 1-3 (全层混淆) 完成。
+
+>>> 实验组: Exp 2-1 (弱混淆)
+    混淆点位: [0, 1, 2, 3]  Alpha范围: (1.2, 1.5)
+    [Setup] 合法密钥因子 r_key: 30.6562
+   |-- Authorized           | Acc:  72.75% | MSE: 0.000000 | Key: 30.6562
+   |-- Attacker (No Key)    | Acc:   1.10% | MSE: 13.090596 | Key: 1.0000
+   |-- Wrong Key (Random)   | Acc:  55.05% | MSE: 5.461502 | Key: 35.2905
+    [Done] 组 Exp 2-1 (弱混淆) 完成。
+
+>>> 实验组: Exp 2-2 (强混淆)
+    混淆点位: [0, 1, 2, 3]  Alpha范围: (10.0, 20.0)
+    [Setup] 合法密钥因子 r_key: 30.6562
+   |-- Authorized           | Acc:  72.75% | MSE: 0.000000 | Key: 30.6562
+   |-- Attacker (No Key)    | Acc:   1.10% | MSE: 13.090596 | Key: 1.0000
+   |-- Wrong Key (Random)   | Acc:   7.95% | MSE: 13.611205 | Key: 20.1135
+    [Done] 组 Exp 2-2 (强混淆) 完成。
+
+所有实验结束。请查看 log_final_fixed.txt。

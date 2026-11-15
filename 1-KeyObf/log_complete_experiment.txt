@@ -1,0 +1,43 @@
+[System] 使用设备: cpu
+[Data] 准备 CIFAR-100 数据集...
+[Model] 加载 CIFAR-100 ResNet-56...
+   |-- Baseline             | Acc:  72.75% | MSE: 0.000000 | Key: N/A
+[Check] 原始模型基准精度: 72.75% (Baseline)
+
+================================================================================
+开始执行论文完整实验 (共 4 组)
+================================================================================
+
+>>> 实验组: Exp 1-1 (单层混淆 - 易被近似)
+    混淆点位: [0]  Alpha范围: (0.1, 0.9)
+    [Setup] User A 密钥因子: 37.9388
+   |-- Authorized           | Acc:  72.75% | MSE: 0.935083 | Key: 37.9388
+   |-- Attacker             | Acc:   0.50% | MSE: 27.291068 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:  71.10% | MSE: 0.029202 | Key: 29.4312
+    [Done] 组 Exp 1-1 (单层混淆 - 易被近似) 完成。
+
+>>> 实验组: Exp 1-3 (全层混淆 - 安全)
+    混淆点位: [0, 1, 2, 3]  Alpha范围: (0.1, 0.9)
+    [Setup] User A 密钥因子: 37.9388
+   |-- Authorized           | Acc:   0.95% | MSE: 6317.325220 | Key: 37.9388
+   |-- Attacker             | Acc:   0.95% | MSE: 15.248010 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:   1.20% | MSE: 1064.846313 | Key: 29.4312
+    [Done] 组 Exp 1-3 (全层混淆 - 安全) 完成。
+
+>>> 实验组: Exp 2-1 (弱混淆 - alpha 接近 1)
+    混淆点位: [0, 1, 2, 3]  Alpha范围: (0.8, 0.95)
+    [Setup] User A 密钥因子: 37.9388
+   |-- Authorized           | Acc:   3.60% | MSE: 3.228092 | Key: 37.9388
+   |-- Attacker             | Acc:   1.10% | MSE: 16.138490 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:   1.85% | MSE: 2.165617 | Key: 29.4312
+    [Done] 组 Exp 2-1 (弱混淆 - alpha 接近 1) 完成。
+
+>>> 实验组: Exp 2-2 (强混淆 - alpha 接近 0)
+    混淆点位: [0, 1, 2, 3]  Alpha范围: (0.01, 0.1)
+    [Setup] User A 密钥因子: 37.9388
+   |-- Authorized           | Acc:   0.85% | MSE: 2200086.575000 | Key: 37.9388
+   |-- Attacker             | Acc:   0.95% | MSE: 13.508645 | Key: 1.0000
+   |-- Wrong UK (User B)    | Acc:   0.85% | MSE: 459797.420312 | Key: 29.4312
+    [Done] 组 Exp 2-2 (强混淆 - alpha 接近 0) 完成。
+
+所有实验结束。请查看 log_complete_experiment.txt。
